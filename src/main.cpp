@@ -29,8 +29,8 @@ static int8_t settingsRow=0, brightness=255;
 
 // YouTube Cloudflare Worker proxy — set your worker URL here
 static char ytWorkerUrl[128]="https://yt-proxy.mikem1.workers.dev";
-// Companion server for video streaming
-static char ytServerIP[32]="192.168.1.100";static uint16_t ytServerPort=8080;
+// Companion server for video streaming  
+static char ytServerIP[32]="192.168.0.82";static uint16_t ytServerPort=8080;
 // Storyboard "video" player
 struct YtStoryboard{char url[200];int frameW;int frameH;int total;int durPerFrame;int perRow;int perCol;};
 static YtStoryboard ytSb={};static int ytSbCurFrame=0;static uint32_t ytSbLastFrame=0;
@@ -657,7 +657,19 @@ static void ytHandleKey(OsKey k, char ch) {
         else if(k==K_ESC) { ytScreen=YTS_INPUT; drawYouTube(); }
     }
     else if(ytScreen==YTS_PLAYER) {
-        if(k==K_ESC) { ytFreeThumb(); ytScreen=YTS_RESULTS; drawYouTube(); }
+        if(k==K_ESC) { ytStopStream(); ytFreeThumb(); ytScreen=YTS_RESULTS; drawYouTube(); }
+        else if(k==K_ENTER && !ytStreaming && ytResults[ytResultSel].id[0]) {
+            // Start MJPEG stream from companion server
+            ytScreen=YTS_STREAMING;
+            char url[256]; snprintf(url,256,"http://%s:%d/api/stream/%s",ytServerIP,ytServerPort,ytResults[ytResultSel].id);
+            ytHttp.begin(ytStreamClient, url); ytHttp.setTimeout(10000);
+            int code = ytHttp.GET();
+            if(code==200) { ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; }
+            else { ytHttp.end(); ytScreen=YTS_PLAYER; drawYouTube(); }
+        }
+    }
+    else if(ytScreen==YTS_STREAMING) {
+        if(k==K_ESC || k==K_SPACE) { ytStopStream(); ytScreen=YTS_PLAYER; drawYouTube(); }
     }
 }
 
@@ -936,6 +948,8 @@ void loop(){
         }
     }
 
+    
+    ytUpdateStream();  // Process MJPEG frames from server
     
     if(now-lastDraw>200){
         lastDraw=now;

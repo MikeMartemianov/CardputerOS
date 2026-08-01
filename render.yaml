@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: cardputeros-youtube
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8080
+    healthCheckPath: /api/scan
