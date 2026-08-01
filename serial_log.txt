@@ -1,0 +1,2 @@
+=== Monitor started 13:16:46 ===
+[13:16:46] Port opened (no reset)
