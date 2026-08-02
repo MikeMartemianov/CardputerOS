@@ -63,13 +63,23 @@ class VideoExtractor:
                         '--disable-dev-shm-usage',
                         '--disable-setuid-sandbox',
                         '--single-process',
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-features=IsolateOrigins,site-per-process',
                     ]
                 )
                 
                 context = browser.new_context(
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                    locale='en-US',
+                    timezone_id='America/New_York',
                 )
+                
+                # Remove webdriver detection
                 page = context.new_page()
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                    window.chrome = { runtime: {} };
+                """)
                 
                 def on_response(response):
                     url = response.url
@@ -78,13 +88,14 @@ class VideoExtractor:
                 
                 page.on('response', on_response)
                 
-                # Go to YouTube
+                print(f"[Chromium] Loading video {video_id}...")
                 page.goto(f'https://www.youtube.com/watch?v={video_id}',
-                         wait_until='domcontentloaded', timeout=20000)
+                         wait_until='domcontentloaded', timeout=25000)
                 
                 # Accept consent if present
                 try:
-                    page.locator('button:has-text("Accept all"), button:has-text("Принять все")').first.click(timeout=3000)
+                    page.locator('button:has-text("Accept all"), button:has-text("Принять все"), button:has-text("Reject all")').first.click(timeout=3000)
+                    time.sleep(2)
                 except:
                     pass
                 
@@ -93,8 +104,8 @@ class VideoExtractor:
                 
                 # Click play
                 try:
-                    page.locator('.ytp-large-play-button, .ytp-play-button').first.click(timeout=3000)
-                    time.sleep(3)
+                    page.locator('.ytp-large-play-button, .ytp-play-button, button[aria-label*="Play"]').first.click(timeout=5000)
+                    time.sleep(5)
                 except:
                     pass
                 
@@ -113,6 +124,7 @@ class VideoExtractor:
                 except:
                     pass
                 
+                print(f"[Chromium] Found {len(video_urls)} video URLs, title={title[:50]}")
                 browser.close()
             
             # Pick best URL
@@ -166,7 +178,7 @@ def api_debug(video_id):
             'duration': info.get('duration', 0),
             'url': info.get('url', '')[:120],
         })
-    return jsonify({'status': 'error', 'error': 'Failed to extract video'})
+    return jsonify({'status': 'error', 'error': 'Chromium could not extract video URL. Check Render logs for details.'})
 
 @app.route('/api/search')
 def api_search():
