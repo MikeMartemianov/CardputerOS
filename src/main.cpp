@@ -28,9 +28,9 @@ static char termLines[12][80];static uint8_t termLineCount=0;
 static int8_t settingsRow=0, brightness=255;
 
 // YouTube Cloudflare Worker proxy — set your worker URL here
-static char ytWorkerUrl[128]="https://yt-proxy.mikem1.workers.dev";
+static char ytWorkerUrl[128]=""; // Set Cloudflare Worker URL here if deployed
 // Companion server for video streaming  
-static char ytServerIP[32]="192.168.0.82";static uint16_t ytServerPort=8080;
+static char ytServerIP[64]="cardputeros.onrender.com";static uint16_t ytServerPort=443;
 // Storyboard "video" player
 struct YtStoryboard{char url[200];int frameW;int frameH;int total;int durPerFrame;int perRow;int perCol;};
 static YtStoryboard ytSb={};static int ytSbCurFrame=0;static uint32_t ytSbLastFrame=0;
@@ -49,7 +49,7 @@ static char ytPlayThumbUrl[200]="";static char ytPlayVideoUrl[500]="";
 static uint8_t* ytThumbBuf=nullptr;static size_t ytThumbSize=0;
 static bool ytLoadingThumb=false;
 // MJPEG streaming from companion server
-static bool ytStreaming=false;static WiFiClient ytStreamClient;static HTTPClient ytHttp;
+static bool ytStreaming=false;static WiFiClientSecure ytStreamClient;static HTTPClient ytHttp;
 static bool ytInFrame=false;static size_t ytFrameDataPos=0;
 static uint8_t ytFrameData[240*135*2];
 
@@ -220,9 +220,10 @@ static void settingsHandleKey(OsKey k){
         else if(settingsRow==2){brightness=(brightness>=224)?32:brightness+32;M5Cardputer.Display.setBrightness(brightness);}
         else if(settingsRow==0){currentApp=APP_WIFI;wifiScanning=true;}
         else if(settingsRow==3){
-            // Cycle through: empty -> default worker -> direct Piped
+            // Toggle Worker on/off
             if(ytWorkerUrl[0]==0) strcpy(ytWorkerUrl,"https://yt-proxy.mikem1.workers.dev");
-            else if(strcmp(ytWorkerUrl,"https://yt-proxy.mikem1.workers.dev")==0) ytWorkerUrl[0]=0;
+            else ytWorkerUrl[0]=0;
+            prefs.begin("os",false);prefs.putString("ytProxy",ytWorkerUrl);prefs.end();
         }
     }
     else if(k==K_ESC){currentApp=APP_DESKTOP;drawDesktop();}
@@ -534,18 +535,68 @@ static void ytFreeThumb() {
 static enum {YTS_INPUT, YTS_RESULTS, YTS_PLAYER, YTS_STREAMING} ytScreen = YTS_INPUT;
 
 static void ytStopStream() {
-    if(ytStreaming){ytStreaming=false;ytHttp.end();}
+    if(ytStreaming){ytStreaming=false;ytHttp.end();ytStreamClient.stop();}
 }
 
-// Stream MJPEG frames from companion server
+// Read HTTP status code AND save Location header
+static char ytRedirectURL[256]="";
+static int ytReadHTTPStatus() {
+    ytRedirectURL[0]=0;
+    uint32_t start = millis();
+    // Wait for first data
+    while(!ytStreamClient.available() && ytStreamClient.connected() && millis()-start < 30000) {
+        delay(100);
+    }
+    // Read status line
+    int status = 0;
+    char lineBuf[256]=""; int linePos=0;
+    bool firstLine = true;
+    while(ytStreamClient.connected()) {
+        while(!ytStreamClient.available() && millis()-start < 10000) { delay(10); }
+        if(!ytStreamClient.available()) break;
+        char c = ytStreamClient.read();
+        if(c=='\r') continue;
+        if(c=='\n') {
+            lineBuf[linePos]=0;
+            if(firstLine && linePos>10) {
+                // "HTTP/1.1 200 OK" or "HTTP/1.1 308 ..."
+                char* sp = strchr(lineBuf,' ');
+                if(sp) status = atoi(sp+1);
+                firstLine = false;
+            } else if(strncasecmp(lineBuf,"Location:",9)==0) {
+                char* p = lineBuf+9; while(*p==' ')p++;
+                strncpy(ytRedirectURL,p,255);
+            }
+            if(linePos==0) break; // Empty line = end of headers
+            linePos = 0;
+        } else {
+            if(linePos<255) lineBuf[linePos++]=c;
+        }
+    }
+    return status;
+}
+
+// Stream MJPEG frames
+static int ytFramesDrawn = 0;
+static int ytLastStatus = 0;
 static void ytUpdateStream() {
     if(!ytStreaming) return;
-    WiFiClient* stream = ytHttp.getStreamPtr();
-    if(!stream || !stream->connected()){ytStopStream();return;}
-    size_t avail = stream->available();
-    if(!avail) return;
+    if(!ytStreamClient.connected()){ytStopStream();return;}
+    size_t avail = ytStreamClient.available();
+    if(!avail) {
+        // Status every 2s
+        static uint32_t lastSt = 0;
+        if(millis()-lastSt > 2000) {
+            lastSt = millis();
+            fRect(0,120,240,15,C_DGRAY);
+            char msg[48]; snprintf(msg,48,"frames:%d bytes:%d", ytFramesDrawn, (int)ytFrameDataPos);
+            dTxt(4,122,msg,C_YELLOW);
+            M5Cardputer.Display.display();
+        }
+        return;
+    }
     uint8_t buf[1024];
-    size_t n = stream->read(buf, sizeof(buf));
+    size_t n = ytStreamClient.read(buf, sizeof(buf));
     for(size_t i=0;i<n;i++){
         uint8_t b=buf[i];
         if(!ytInFrame){
@@ -555,20 +606,21 @@ static void ytUpdateStream() {
         } else {
             if(ytFrameDataPos<sizeof(ytFrameData)) ytFrameData[ytFrameDataPos++]=b;
             if(ytFrameDataPos>100&&ytFrameData[ytFrameDataPos-2]==0xFF&&ytFrameData[ytFrameDataPos-1]==0xD9){
-                // Draw MJPEG frame
-                M5Cardputer.Display.drawJpg(ytFrameData,ytFrameDataPos,0,0,240,135,0,0,1.0f);
-                // Overlay info bar
+                bool ok = M5Cardputer.Display.drawJpg(ytFrameData,ytFrameDataPos,0,0,240,135,0,0,1.0f);
                 fRect(0,120,240,15,C_DGRAY);
-                char info[50]; snprintf(info,50,"%.40s",ytPlayTitle);
-                dTxt(4,122,info,C_WHITE);
+                char info[50]; snprintf(info,50,"OK:%d %dKB", ok, (int)(ytFrameDataPos/1024));
+                dTxt(4,122,info,ok?C_GREEN:C_RED);
+                ytFramesDrawn++;
                 ytInFrame=false;ytFrameDataPos=0;
             }
+            // Buffer overflow protection
+            if(ytFrameDataPos >= sizeof(ytFrameData)) { ytInFrame=false; ytFrameDataPos=0; }
         }
     }
 }
 
 static void drawYouTube(){
-    clear(C_BLACK);
+    if(ytScreen!=YTS_STREAMING) { clear(C_BLACK); }
     fRect(0,0,240,14,C_RED); dTxt(4,2,"YouTube",C_WHITE); dTxt(228,2,"X",C_WHITE);
     
     if(ytScreen==YTS_INPUT) {
@@ -659,13 +711,88 @@ static void ytHandleKey(OsKey k, char ch) {
     else if(ytScreen==YTS_PLAYER) {
         if(k==K_ESC) { ytStopStream(); ytFreeThumb(); ytScreen=YTS_RESULTS; drawYouTube(); }
         else if(k==K_ENTER && !ytStreaming && ytResults[ytResultSel].id[0]) {
-            // Start MJPEG stream from companion server
             ytScreen=YTS_STREAMING;
-            char url[256]; snprintf(url,256,"http://%s:%d/api/stream/%s",ytServerIP,ytServerPort,ytResults[ytResultSel].id);
-            ytHttp.begin(ytStreamClient, url); ytHttp.setTimeout(10000);
-            int code = ytHttp.GET();
-            if(code==200) { ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; }
-            else { ytHttp.end(); ytScreen=YTS_PLAYER; drawYouTube(); }
+            // Step 1: Wake up server with simple HTTP request
+            bool awake = false;
+            for(int attempt=0; attempt<10 && !awake; attempt++) {
+                clear(C_BLACK);
+                dTxt(30,20,"YouTube Stream",C_RED);
+                dTxt(30,45,"Waking server...",C_CYAN);
+                char msg[40]; snprintf(msg,40,"Attempt %d/10",attempt+1);
+                dTxt(30,60,msg,C_LGRAY);
+                M5Cardputer.Display.display();
+                // Simple GET to /api/scan to wake Render
+                WiFiClientSecure probe; probe.setInsecure();
+                HTTPClient http;
+                String wakeUrl = String("https://") + ytServerIP + "/api/scan";
+                http.begin(probe, wakeUrl);
+                http.setTimeout(30000);
+                int code = http.GET();
+                http.end();
+                probe.stop();
+                if(code == 200) { awake = true; }
+                else {
+                    fRect(30,75,200,20,C_BLACK);
+                    char err[30]; snprintf(err,30,"Status: %d, retrying...",code);
+                    dTxt(30,75,err,C_YELLOW);
+                    M5Cardputer.Display.display();
+                    delay(5000);
+                }
+            }
+            if(!awake) {
+                clear(C_BLACK);
+                dTxt(30,50,"Server not reachable",C_RED);
+                dTxt(30,70,"Check your internet",C_LGRAY);
+                M5Cardputer.Display.display();
+                delay(3000);
+                ytScreen=YTS_PLAYER; drawYouTube();
+                return;
+            }
+            // Step 2: Server is awake — start MJPEG stream directly
+            clear(C_BLACK);
+            dTxt(30,50,"Server awake!",C_GREEN);
+            dTxt(30,70,"Starting stream...",C_CYAN);
+            M5Cardputer.Display.display();
+            ytStreamClient.setInsecure();
+            ytStreamClient.setTimeout(30000);
+            if(ytStreamClient.connect(ytServerIP, 443)) {
+                char req[256]; snprintf(req,256,"GET /api/stream/%s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",ytResults[ytResultSel].id,ytServerIP);
+                ytStreamClient.print(req);
+                ytLastStatus = ytReadHTTPStatus();
+                if(ytLastStatus == 200) {
+                    ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0;
+                } else if(ytLastStatus == 308 && ytRedirectURL[0]) {
+                    // Follow redirect — strip trailing slash to avoid 404
+                    ytStreamClient.stop();
+                    String locStr = String(ytRedirectURL);
+                    while(locStr.endsWith("/")) locStr.remove(locStr.length()-1);
+                    int protoEnd = locStr.indexOf("://");
+                    int hostStart = (protoEnd>=0) ? protoEnd+3 : 0;
+                    int hostEnd = locStr.indexOf("/", hostStart);
+                    String host = locStr.substring(hostStart, hostEnd);
+                    String path = locStr.substring(hostEnd);
+                    if(ytStreamClient.connect(host.c_str(), 443)) {
+                        snprintf(req,256,"GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",path.c_str(),host.c_str());
+                        ytStreamClient.print(req);
+                        ytLastStatus = ytReadHTTPStatus();
+                        if(ytLastStatus == 200) {
+                            ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0;
+                        }
+                    }
+                }
+            }
+            if(!ytStreaming) {
+                clear(C_BLACK);
+                dTxt(30,30,"Stream failed",C_RED);
+                // Show debug: status code
+                char dbg[64];
+                snprintf(dbg,64,"code:%d conn:%d", 
+                    ytLastStatus, ytStreamClient.connected());
+                dTxt(30,50,dbg,C_YELLOW);
+                M5Cardputer.Display.display();
+                delay(3000);
+                ytScreen=YTS_PLAYER; drawYouTube();
+            }
         }
     }
     else if(ytScreen==YTS_STREAMING) {
@@ -785,7 +912,7 @@ void setup(){
     strcpy(wifiSSID,prefs.getString("ssid","").c_str());
     strcpy(wifiPass,prefs.getString("pass","").c_str());
     brightness=prefs.getInt("brightness",255);
-    strcpy(ytWorkerUrl,prefs.getString("ytProxy","https://yt-proxy.mikem1.workers.dev").c_str());
+    strcpy(ytWorkerUrl,prefs.getString("ytProxy","").c_str());
     prefs.end();
 
     bootScreen();
@@ -949,20 +1076,24 @@ void loop(){
     }
 
     
-    ytUpdateStream();  // Process MJPEG frames from server
-    
     if(now-lastDraw>200){
         lastDraw=now;
-        drawTaskbar();
-        switch(currentApp){
-            case APP_TERMINAL:drawTerminal();break;
-            case APP_SETTINGS:drawSettings();break;
-            case APP_WIFI:if(wifiInputMode)drawWifiInput();else drawWifiScan();break;
-            case APP_YOUTUBE:drawYouTube();break;
-            default:break;
+        if(!(currentApp==APP_YOUTUBE && ytScreen==YTS_STREAMING)){
+            drawTaskbar();
+            switch(currentApp){
+                case APP_TERMINAL:drawTerminal();break;
+                case APP_SETTINGS:drawSettings();break;
+                case APP_WIFI:if(wifiInputMode)drawWifiInput();else drawWifiScan();break;
+                case APP_YOUTUBE:drawYouTube();break;
+                default:break;
+            }
+            if(showDebug && !(currentApp==APP_YOUTUBE)) drawDebug();
         }
-        if(showDebug)drawDebug();
     }
+
+    // MJPEG MUST be last — nothing should draw over it
+    ytUpdateStream();
+    
     mouseDraw(&M5Cardputer.Display);
     delay(5);
 }

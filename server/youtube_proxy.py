@@ -163,7 +163,7 @@ def api_thumb(video_id):
         return f'Error: {e}', 500
 
 
-@app.route('/api/stream/<video_id>')
+@app.route('/api/stream/<video_id>', strict_slashes=False)
 def api_stream(video_id):
     """MJPEG video stream - core endpoint"""
     info = cache.get_stream_url(video_id)
