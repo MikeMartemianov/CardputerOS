@@ -30,7 +30,7 @@ static int8_t settingsRow=0, brightness=255;
 // YouTube Cloudflare Worker proxy — set your worker URL here
 static char ytWorkerUrl[128]=""; // Set Cloudflare Worker URL here if deployed
 // Companion server for video streaming  
-static char ytServerIP[64]="cardputer-os.vercel.app";
+static char ytServerIP[64]="192.168.0.82";
 // Storyboard "video" player
 struct YtStoryboard{char url[200];int frameW;int frameH;int total;int durPerFrame;int perRow;int perCol;};
 static YtStoryboard ytSb={};static int ytSbCurFrame=0;static uint32_t ytSbLastFrame=0;

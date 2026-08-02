@@ -1,0 +1,37 @@
+- generic [active] [ref=f12e1]:
+  - generic "Проигрыватель YouTube" [ref=f12e5]:
+    - button "Смотреть" [ref=f12e10] [cursor=pointer]
+    - generic [ref=f12e11]:
+      - generic [ref=f12e12]:
+        - slider "Ползунок поиска" [disabled] [ref=f12e13]
+        - generic:
+          - generic:
+            - generic:
+              - slider "Чтобы перемотать видео точнее, нажмите на панель или прокрутите ее" [disabled]
+      - generic [ref=f12e22]:
+        - generic [ref=f12e23]:
+          - button "Пауза (k)" [ref=f12e24] [cursor=pointer]
+          - generic [ref=f12e25]:
+            - button "Отключение звука (m)" [ref=f12e27] [cursor=pointer]
+            - slider "Громкость"
+          - button "0 мин. 0 сек. (общая длительность 1 мин. 0 сек.)" [ref=f12e31] [cursor=pointer]: 0:00 / 1:00
+        - generic [ref=f12e32]:
+          - generic [ref=f12e33]:
+            - button "Субтитры недоступны" [ref=f12e34] [cursor=pointer]
+            - button "Настройки" [ref=f12e36] [cursor=pointer]
+          - generic [ref=f12e37]:
+            - button "Широкий экран (t)" [ref=f12e38] [cursor=pointer]
+            - button "Во весь экран (f)" [ref=f12e39] [cursor=pointer]
+  - banner [ref=f12e63]:
+    - generic [ref=f12e65]:
+      - generic [ref=f12e66]:
+        - button "Гид" [ref=f12e68] [cursor=pointer]
+        - generic [ref=f12e70]:
+          - link:
+            - /url: /
+      - search [ref=f12e72]:
+        - generic [ref=f12e74]:
+          - generic [ref=f12e75]:
+            - combobox [expanded] [ref=f12e77]
+            - button [ref=f12e80] [cursor=pointer]
+          - button "Search" [ref=f12e81] [cursor=pointer]
