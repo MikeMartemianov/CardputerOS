@@ -352,6 +352,7 @@ def api_debug(video_id):
     """Debug endpoint - shows yt-dlp output"""
     import traceback
     try:
+        cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
         ydl_opts = {
             'format': 'worst[ext=mp4]',
             'quiet': False,
@@ -361,6 +362,8 @@ def api_debug(video_id):
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             },
         }
+        if os.path.exists(cookies_path):
+            ydl_opts['cookies'] = cookies_path
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
             return jsonify({
@@ -374,8 +377,68 @@ def api_debug(video_id):
         return jsonify({
             'status': 'error',
             'error': str(e),
-            'traceback': traceback.format_exc()[-500:],
         })
+
+
+@app.route('/api/auth')
+def api_auth():
+    """OAuth2 device flow for yt-dlp - authorize once, works for all videos"""
+    import subprocess
+    import threading
+    
+    oauth_file = os.path.join(os.path.dirname(__file__), 'yt_dlp_token')
+    
+    # Check if already authorized
+    if os.path.exists(oauth_file):
+        return jsonify({'status': 'authenticated', 'message': 'Already authorized'})
+    
+    # Run yt-dlp OAuth in background, capture the URL
+    def run_oauth():
+        proc = subprocess.Popen(
+            ['yt-dlp', '--username', 'oauth2', '--password', '', 
+             '--skip-download', '--no-check-certificates',
+             'https://www.youtube.com/watch?v=dQw4w9WgXcQ'],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, env={**os.environ, 'PYTHONUNBUFFERED': '1'}
+        )
+        for line in proc.stdout:
+            print(f"[OAUTH] {line.strip()}")
+            if 'google.com/device' in line:
+                with open('/tmp/oauth_url.txt', 'w') as f:
+                    f.write(line.strip())
+        proc.wait()
+        if proc.returncode == 0:
+            with open('/tmp/oauth_done.txt', 'w') as f:
+                f.write('done')
+    
+    # Start OAuth in background
+    t = threading.Thread(target=run_oauth, daemon=True)
+    t.start()
+    
+    # Wait up to 10 seconds for the URL to appear
+    for i in range(20):
+        time.sleep(0.5)
+        if os.path.exists('/tmp/oauth_url.txt'):
+            with open('/tmp/oauth_url.txt') as f:
+                url_line = f.read()
+            return jsonify({
+                'status': 'needs_auth',
+                'message': 'Open this URL in your browser and authorize',
+                'url_line': url_line,
+            })
+    
+    return jsonify({'status': 'waiting', 'message': 'OAuth process starting...'})
+
+
+@app.route('/api/auth/status')
+def api_auth_status():
+    """Check if OAuth is complete"""
+    oauth_file = os.path.join(os.path.dirname(__file__), 'yt_dlp_token')
+    if os.path.exists(oauth_file):
+        return jsonify({'status': 'authenticated'})
+    if os.path.exists('/tmp/oauth_done.txt'):
+        return jsonify({'status': 'just_completed'})
+    return jsonify({'status': 'pending'})
 
 @app.route('/api/play', methods=['POST'])
 def api_play():
