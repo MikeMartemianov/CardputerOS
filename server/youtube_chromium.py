@@ -659,10 +659,10 @@ def api_ffmpeg_test(video_id):
     video_url = info['url']
     cookie_header = extractor._cookie_header if extractor._cookie_header else ''
     cmd = ['ffmpeg', '-re']
+    headers_str = 'User-Agent: Mozilla/5.0\r\nReferer: https://www.youtube.com/\r\n'
     if cookie_header:
-        cmd += ['-headers', f'Cookie: {cookie_header}\r\nUser-Agent: Mozilla/5.0\r\n']
-    else:
-        cmd += ['-headers', 'User-Agent: Mozilla/5.0\r\n']
+        headers_str += f'Cookie: {cookie_header}\r\n'
+    cmd += ['-headers', headers_str]
     cmd += ['-i', video_url, '-f', 'mjpeg', '-vf', f'scale={MJPEG_WIDTH}:{MJPEG_HEIGHT}', '-r', '5', '-q:v', '80', '-an', '-frames:v', '1', '-y', '/tmp/test_frame.jpg']
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=20)
@@ -758,10 +758,10 @@ def api_stream(video_id):
         cmd = [
             'ffmpeg', '-re',
         ]
+        headers_str = 'User-Agent: Mozilla/5.0\r\nReferer: https://www.youtube.com/\r\n'
         if cookie_header:
-            cmd += ['-headers', f'Cookie: {cookie_header}\r\nUser-Agent: Mozilla/5.0\r\n']
-        else:
-            cmd += ['-headers', 'User-Agent: Mozilla/5.0\r\n']
+            headers_str += f'Cookie: {cookie_header}\r\n'
+        cmd += ['-headers', headers_str]
         cmd += [
             '-i', video_url,
             '-f', 'mjpeg',
