@@ -54,9 +54,11 @@ class VideoCache:
                 'quiet': True,
                 'no_warnings': True,
                 'extract_flat': False,
+                'cookies': os.path.join(os.path.dirname(__file__), 'cookies.txt'),
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 },
+                'extractor_args': {'youtube': {'player_client': ['web_creator']}},
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

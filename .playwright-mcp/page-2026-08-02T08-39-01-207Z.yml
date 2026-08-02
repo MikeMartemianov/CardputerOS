@@ -1,0 +1,86 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e4]:
+      - generic [ref=e6]:
+        - generic [ref=e7]:
+          - button "Гид" [ref=e9] [cursor=pointer]
+          - generic [ref=e11]:
+            - link "Главная страница YouTube" [ref=e12] [cursor=pointer]:
+              - /url: /
+            - generic [ref=e16]: FI
+          - button "Пропустить" [ref=e20] [cursor=pointer]
+        - search [ref=e25]:
+          - generic [ref=e27]:
+            - generic [ref=e28]:
+              - combobox "Поиск" [expanded] [ref=e30]
+              - button [ref=e33] [cursor=pointer]
+            - button "Search" [ref=e34] [cursor=pointer]
+        - generic [ref=e37]:
+          - button "Настройки" [ref=e42] [cursor=pointer]
+          - link "Войти" [ref=e46] [cursor=pointer]:
+            - /url: https://accounts.google.com/ServiceLogin?service=youtube&uilel=3&passive=true&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26app%3Ddesktop%26hl%3Dru%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F&hl=ru&ec=65620
+    - navigation [ref=e50]
+    - main [ref=e52]:
+      - generic [ref=e61]:
+        - generic [ref=e62]:
+          - heading "История YouTube отключена" [level=2] [ref=e63]
+          - generic "Включить историю просмотра и поиска можно в любое время – тогда предлагаемые видео будут отражать ваши интересы. Чтобы улучшить рекомендации, включите историю YouTube, подтвердите настройки и разрешите нам использовать файлы cookie и ваши данные. Подробнее…" [ref=e65]:
+            - text: Включить историю просмотра и поиска можно в любое время – тогда предлагаемые видео будут отражать ваши интересы. Чтобы улучшить рекомендации, включите историю YouTube, подтвердите настройки и разрешите нам использовать файлы cookie и ваши данные.
+            - link "Подробнее…" [ref=e66] [cursor=pointer]:
+              - /url: https://support.google.com/youtube/answer/95725
+        - link "Изменить настройки" [ref=e71] [cursor=pointer]:
+          - /url: https://consent.youtube.com/d?continue=https://www.youtube.com/%3Fcbrd%3D1&gl=FI&m=0&pc=yt&oyh=1&cm=6&hl=ru&src=4
+  - dialog [active] [ref=e75]:
+    - generic [ref=e76]:
+      - generic [ref=e77]: Компания Google
+      - generic [ref=e81]:
+        - 'button "Язык: Russian" [ref=e86] [cursor=pointer]':
+          - generic: ru
+        - generic [ref=e91]:
+          - link "Войти в аккаунт" [ref=e93] [cursor=pointer]:
+            - /url: https://accounts.google.com/ServiceLogin?service=youtube&uilel=3&passive=true&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26app%3Ddesktop%26hl%3Dru%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F&hl=ru
+          - tooltip "tooltip"
+    - generic [ref=e97]:
+      - heading "Прежде чем перейти к YouTube" [level=2] [ref=e98]
+      - generic [ref=e99]:
+        - generic [ref=e100]:
+          - generic [ref=e102]:
+            - text: Мы используем
+            - link "файлы cookie" [ref=e103] [cursor=pointer]:
+              - /url: https://policies.google.com/technologies/cookies?hl=ru
+            - text: "и данные, в том числе IP-адреса, чтобы:"
+          - list [ref=e104]:
+            - listitem [ref=e105]:
+              - generic [ref=e107]: Предоставлять сервисы Google и обеспечивать их работу.
+            - listitem [ref=e108]:
+              - generic [ref=e110]: Отслеживать сбои и обеспечивать защиту от спама, мошенничества и злоупотреблений.
+            - listitem [ref=e111]:
+              - generic [ref=e113]: Анализировать вовлеченность аудитории и статистику сайтов, чтобы узнавать, как пользуются нашими сервисами, и улучшать их.
+        - generic [ref=e114]:
+          - generic [ref=e115]: "Если вы выберете \"Принять все\", мы также будем использовать файлы cookie и данные, в том числе IP-адреса, чтобы:"
+          - list [ref=e116]:
+            - listitem [ref=e117]:
+              - generic [ref=e119]: Разрабатывать и улучшать новые сервисы.
+            - listitem [ref=e120]:
+              - generic [ref=e122]: Показывать рекламу и оценивать ее эффективность.
+            - listitem [ref=e123]:
+              - generic [ref=e125]: Показывать персонализированный контент (в зависимости от выбранных вами настроек).
+            - listitem [ref=e126]:
+              - generic [ref=e128]: Показывать персонализированную рекламу (в зависимости от выбранных вами настроек).
+        - generic [ref=e129]: Если вы выберете "Отклонить все", мы не будем использовать файлы cookie и IP-адреса для этих дополнительных целей.
+        - generic [ref=e130]: Неперсонализированные материалы и реклама подбираются с учетом таких факторов, как контент, который вы просматриваете в текущий момент, и ваше местоположение (для показа рекламы используются данные только о приблизительном местоположении). Персонализированные материалы и реклама также могут включать рекомендованные видео (в том числе на главной странице YouTube) и объявления, подобранные с учетом ваших действий, например истории просмотра и поиска на YouTube. Если это необходимо, мы также используем файлы cookie и данные, чтобы показывать материалы в соответствии с возрастом пользователей.
+        - generic [ref=e131]: Выберите "Другие варианты", чтобы получить дополнительную информацию, в том числе об управлении настройками конфиденциальности. Вы также можете в любое время перейти на страницу g.co/privacytools.
+        - generic [ref=e132]:
+          - generic [ref=e133]:
+            - button "Запретить использование файлов cookie и данных в описанных выше целях" [ref=e136] [cursor=pointer]:
+              - generic: Отклонить все
+            - button "Разрешить использование файлов cookie и данных в описанных выше целях" [ref=e142] [cursor=pointer]:
+              - generic: Принять все
+          - link "Другие варианты" [ref=e149] [cursor=pointer]:
+            - /url: https://consent.youtube.com/d?continue=https://www.youtube.com/%3Fcbrd%3D1&gl=FI&m=0&pc=yt&cm=2&hl=ru&src=2&escs=AZ-r6Z6F-yu3zdXhcDQODiKimdde1ih6RxD9QhMRO7fRXUcr9x5uDNgVskwCCdsI20gQDxa__z-LT92fIsKgmYay0Q1DzYssoQMN
+        - generic [ref=e153]:
+          - link "Политика конфиденциальности" [ref=e155] [cursor=pointer]:
+            - /url: https://policies.google.com/privacy?hl=ru
+          - generic [ref=e156]: •
+          - link "Условия использования" [ref=e158] [cursor=pointer]:
+            - /url: https://policies.google.com/terms?hl=ru

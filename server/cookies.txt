@@ -1,0 +1,5 @@
+# Netscape HTTP Cookie File
+.youtube.com	TRUE	/	TRUE	0	CONSENT	YES+cb.20240101-00-p0.en+FX+999
+.youtube.com	TRUE	/	TRUE	0	SOCS	CAISNQgDEitib3FfaWRlbnRpdHlfZnJvbnRlbmRfdWlzZXJ2ZXJfMjAyNDAxMDEuMDdfcDEaAmVuIAEaBgiAM_CkBg
+.youtube.com	TRUE	/	FALSE	0	VISITOR_INFO1_LIVE	fPQ4jCL6EiE
+.youtube.com	TRUE	/	FALSE	0	YSC	abc123
