@@ -18,6 +18,7 @@ import subprocess
 import threading
 import tempfile
 import shutil
+import urllib.request
 from pathlib import Path
 from flask import Flask, Response, jsonify, request, send_file
 import yt_dlp
@@ -43,79 +44,97 @@ class VideoCache:
         self._lock = threading.Lock()
     
     def get_stream_url(self, video_id):
-        """Get direct video stream URL using yt-dlp"""
+        """Get direct video stream URL using Piped API (no yt-dlp needed)"""
         with self._lock:
             if video_id in self._cache:
-                return self._cache[video_id]
+                cached = self._cache[video_id]
+                if time.time() - cached.get('time', 0) < 3600:
+                    return cached
         
-        try:
-            ydl_opts = {
-                'format': 'worst[ext=mp4]',  # Lowest quality for ESP32
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-                'cookies': os.path.join(os.path.dirname(__file__), 'cookies.txt'),
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                },
-                'extractor_args': {'youtube': {'player_client': ['web_creator']}},
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
-                
-                if 'url' in info:
-                    url = info['url']
-                elif 'formats' in info and info['formats']:
-                    # Get lowest quality format
-                    formats = sorted(info['formats'], key=lambda f: f.get('height', 9999))
-                    url = formats[0]['url']
-                else:
-                    return None
-                
-                with self._lock:
-                    self._cache[video_id] = {
-                        'url': url,
-                        'title': info.get('title', 'Unknown'),
-                        'duration': info.get('duration', 0),
-                        'thumbnail': info.get('thumbnail', ''),
-                        'time': time.time(),
-                    }
-                
-                return self._cache[video_id]
-        except Exception as e:
-            print(f"Error getting stream URL for {video_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
+        # Try Piped API instances for stream info
+        piped_instances = [
+            'https://api.piped.private.coffee',
+            'https://pipedapi.adminforge.de',
+        ]
+        
+        for instance in piped_instances:
+            try:
+                url = f'{instance}/streams/{video_id}'
+                req = urllib.request.Request(url, headers={
+                    'User-Agent': 'CardputerOS/0.5',
+                    'Accept': 'application/json',
+                })
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    data = json.loads(response.read())
+                    
+                    if 'error' in data:
+                        print(f"Piped error for {video_id}: {data['error']}")
+                        continue
+                    
+                    # Find lowest quality video stream with audio
+                    video_url = None
+                    for stream in data.get('videoStreams', []):
+                        if not stream.get('videoOnly', True):
+                            video_url = stream.get('url')
+                            break
+                    
+                    # Fallback: any video stream
+                    if not video_url and data.get('videoStreams'):
+                        video_url = data['videoStreams'][0].get('url')
+                    
+                    if not video_url:
+                        # Try audioStreams as fallback
+                        for stream in data.get('audioStreams', []):
+                            video_url = stream.get('url')
+                            break
+                    
+                    if video_url:
+                        with self._lock:
+                            self._cache[video_id] = {
+                                'url': video_url,
+                                'title': data.get('title', 'Unknown'),
+                                'duration': data.get('duration', 0),
+                                'thumbnail': data.get('thumbnailUrl', ''),
+                                'time': time.time(),
+                            }
+                        return self._cache[video_id]
+                    
+            except Exception as e:
+                print(f"Piped API error ({instance}): {e}")
+                continue
+        
+        return None
     
     def search(self, query):
-        """Search YouTube"""
-        try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': True,
-                'default_search': 'ytsearch5',
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f'ytsearch5:{query}', download=False)
-                
-                results = []
-                if 'entries' in info:
-                    for entry in info['entries']:
-                        results.append({
-                            'id': entry.get('id', ''),
-                            'title': entry.get('title', 'Unknown'),
-                            'duration': entry.get('duration_string', '0:00'),
-                            'views': f"{entry.get('view_count', 0):,}",
-                        })
-                
-                return results
-        except Exception as e:
-            print(f"Error searching: {e}")
-            return []
+        """Search YouTube via Piped API"""
+        piped_instances = [
+            'https://api.piped.private.coffee',
+            'https://pipedapi.adminforge.de',
+        ]
+        for instance in piped_instances:
+            try:
+                url = f'{instance}/search?q={urllib.parse.quote(query)}&filter=videos'
+                req = urllib.request.Request(url, headers={
+                    'User-Agent': 'CardputerOS/0.5',
+                    'Accept': 'application/json',
+                })
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    data = json.loads(response.read())
+                    results = []
+                    for item in data.get('items', [])[:10]:
+                        vid = item.get('url', '').replace('/watch?v=', '')
+                        if vid:
+                            results.append({
+                                'id': vid,
+                                'title': item.get('title', 'Unknown')[:64],
+                                'duration': f"{item.get('duration', 0) // 60}:{item.get('duration', 0) % 60:02d}",
+                                'views': f"{item.get('views', 0):,}",
+                            })
+                    return results
+            except Exception as e:
+                print(f"Piped search error ({instance}): {e}")
+                continue
+        return []
 
 
 cache = VideoCache()
@@ -160,7 +179,8 @@ def api_thumb(video_id):
     if not thumb_url:
         return 'No thumbnail', 404
     
-    import urllib.request
+import urllib.request
+import urllib.parse
     try:
         req = urllib.request.Request(thumb_url)
         with urllib.request.urlopen(req) as response:
