@@ -720,18 +720,27 @@ def api_stream(video_id):
         return jsonify({'error': 'Video not found'}), 404
 
     video_url = info['url']
-    print(f"[Stream] Starting MJPEG for {video_id}, url_len={len(video_url)}")
+    print(f"[Stream] Starting MJPEG for {video_id}, url_len={len(video_url)}, source={info.get('source','?')}")
+
+    # Build cookie header for ffmpeg
+    cookie_header = extractor._cookie_header if extractor._cookie_header else ''
 
     def generate_mjpeg():
         cmd = [
             'ffmpeg', '-re',
-            '-headers', f'User-Agent: Mozilla/5.0\r\n',
+        ]
+        if cookie_header:
+            cmd += ['-headers', f'Cookie: {cookie_header}\r\nUser-Agent: Mozilla/5.0\r\n']
+        else:
+            cmd += ['-headers', 'User-Agent: Mozilla/5.0\r\n']
+        cmd += [
             '-i', video_url,
             '-f', 'mjpeg',
             '-vf', f'scale={MJPEG_WIDTH}:{MJPEG_HEIGHT}',
             '-r', str(MJPEG_FPS), '-q:v', str(MJPEG_QUALITY),
             '-an', 'pipe:1',
         ]
+        print(f"[Stream] ffmpeg cmd: {' '.join(cmd[:6])}...")
         process = None
         try:
             process = subprocess.Popen(
@@ -754,6 +763,7 @@ def api_stream(video_id):
 
             # Persistent buffer for JPEG frames across chunks
             buf = b''
+            frame_count = 0
             while True:
                 chunk = process.stdout.read(65536)
                 if not chunk:
@@ -764,27 +774,25 @@ def api_stream(video_id):
                 while True:
                     soi = buf.find(b'\xff\xd8')
                     if soi < 0:
-                        # No SOI — keep last byte in case it's partial FF
                         buf = buf[-1:] if buf.endswith(b'\xff') else b''
                         break
 
-                    # Discard anything before SOI
                     if soi > 0:
                         buf = buf[soi:]
 
-                    # Find EOI after SOI
                     eoi = buf.find(b'\xff\xd9', 2)
                     if eoi < 0:
-                        break  # Incomplete frame, wait for more data
+                        break
 
                     frame = buf[:eoi + 2]
                     buf = buf[eoi + 2:]
 
-                    if len(frame) > 100:  # Skip tiny/invalid frames
+                    if len(frame) > 100:
                         yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'
                                + frame + b'\r\n')
+                        frame_count += 1
 
-            print(f"[Stream] ffmpeg ended for {video_id}")
+            print(f"[Stream] Done for {video_id}, {frame_count} frames sent")
 
         except Exception as e:
             print(f"[Stream] MJPEG error: {e}")
