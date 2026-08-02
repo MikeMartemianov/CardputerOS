@@ -179,8 +179,6 @@ def api_thumb(video_id):
     if not thumb_url:
         return 'No thumbnail', 404
     
-import urllib.request
-import urllib.parse
     try:
         req = urllib.request.Request(thumb_url)
         with urllib.request.urlopen(req) as response:
