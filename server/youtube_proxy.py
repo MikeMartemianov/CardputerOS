@@ -100,6 +100,8 @@ class VideoCache:
         try:
             cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
             oauth_token = os.environ.get('OAUTH_TOKEN', '')
+            cookies_exist = os.path.exists(cookies_path)
+            cookies_size = os.path.getsize(cookies_path) if cookies_exist else 0
             
             ydl_opts = {
                 'format': 'worst[ext=mp4]',
@@ -110,8 +112,11 @@ class VideoCache:
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 },
             }
-            if os.path.exists(cookies_path):
+            if cookies_exist and cookies_size > 50:
                 ydl_opts['cookies'] = cookies_path
+                print(f"[yt-dlp] Using cookies: {cookies_path} ({cookies_size} bytes)")
+            else:
+                print(f"[yt-dlp] No valid cookies at {cookies_path} (exists={cookies_exist}, size={cookies_size})")
             
             # Write OAuth token to temp file for yt-dlp
             if oauth_token:
@@ -365,6 +370,9 @@ def api_debug(video_id):
     import traceback
     try:
         cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+        cookies_exist = os.path.exists(cookies_path)
+        cookies_size = os.path.getsize(cookies_path) if cookies_exist else 0
+        
         ydl_opts = {
             'format': 'worst[ext=mp4]',
             'quiet': False,
@@ -374,8 +382,9 @@ def api_debug(video_id):
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             },
         }
-        if os.path.exists(cookies_path):
+        if cookies_exist and cookies_size > 50:
             ydl_opts['cookies'] = cookies_path
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
             return jsonify({
@@ -384,6 +393,7 @@ def api_debug(video_id):
                 'duration': info.get('duration', 0),
                 'url': info.get('url', 'NONE')[:100],
                 'formats_count': len(info.get('formats', [])),
+                'cookies': f'{cookies_path} ({cookies_size} bytes)',
             })
     except Exception as e:
         return jsonify({
