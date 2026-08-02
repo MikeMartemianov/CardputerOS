@@ -119,7 +119,7 @@ class VideoExtractor:
             'format': 'worst[ext=mp4]/worst',
             'quiet': True,
             'no_warnings': True,
-            'js_runtimes': ['node'],
+            'js_runtimes': {'node': {}},
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             },
@@ -346,19 +346,50 @@ def api_search():
 
 @app.route('/api/stream/<video_id>')
 def api_stream(video_id):
+    video_url = None
+    info = None
+    source = '?'
+
+    # Try yt-dlp first — it downloads directly, bypassing 403
     try:
-        info = extractor.get_video_url(video_id)
+        import yt_dlp
+        cookies_exist = os.path.exists(COOKIES_PATH)
+        cookies_size = os.path.getsize(COOKIES_PATH) if cookies_exist else 0
+        ydl_opts = {
+            'format': 'worst[ext=mp4]/worst',
+            'quiet': True,
+            'no_warnings': True,
+            'js_runtimes': {'node': {}},
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            },
+        }
+        if cookies_exist and cookies_size > 50:
+            ydl_opts['cookies'] = COOKIES_PATH
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            yt_info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+            if 'url' in yt_info:
+                video_url = yt_info['url']
+                source = 'yt-dlp'
+                info = {'title': yt_info.get('title', '?'), 'duration': yt_info.get('duration', 0)}
+                print(f"[Stream] yt-dlp URL obtained for {video_id}")
     except Exception as e:
-        print(f"[Stream] Extract error: {e}")
-        return jsonify({'error': str(e)}), 500
-    if not info:
-        return jsonify({'error': 'Video not found'}), 404
+        print(f"[Stream] yt-dlp failed: {e}")
 
-    video_url = info.get('url', '')
+    # Fallback: innertube URL
     if not video_url:
-        return jsonify({'error': 'No video URL'}), 500
+        try:
+            info = extractor.get_video_url(video_id)
+            if info:
+                video_url = info.get('url', '')
+                source = info.get('source', 'innertube')
+        except Exception as e:
+            print(f"[Stream] Innertube failed: {e}")
 
-    print(f"[Stream] MJPEG for {video_id}, source={info.get('source','?')}, url_len={len(video_url)}")
+    if not video_url:
+        return jsonify({'error': 'Could not extract video URL'}), 500
+
+    print(f"[Stream] MJPEG for {video_id}, source={source}, url_len={len(video_url)}")
 
     cookie_header = extractor._cookie_header if extractor._cookie_header else ''
 
