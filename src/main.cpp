@@ -53,6 +53,8 @@ static bool ytStreaming=false;static WiFiClientSecure ytStreamClient;static HTTP
 static bool ytInFrame=false;static size_t ytFrameDataPos=0;
 static uint32_t ytLastDataTime=0;static int ytReconnectCount=0;
 static char ytExtractedUrl[2048]=""; // Saved ESP32-extracted URL for reconnects
+static char ytStreamReq[2300]="";   // HTTP request buffer (too large for stack)
+static char ytEncodedUrl[2100]="";  // URL-encoded video URL
 static uint8_t ytFrameData[240*135*2];
 
 static int wifiScanCount=0;static String wifiScanNames[20];
@@ -428,30 +430,32 @@ static bool ytExtractVideoUrl(const char* videoId, char* urlBuf, int urlBufSize)
     char body[300];
     snprintf(body, 300, "{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"2.20250101.00.00\"}},\"videoId\":\"%s\"}", videoId);
 
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(30000);
+    static WiFiClientSecure ytInnertubeClient;
+    static HTTPClient ytInnertubeHttp;
+    
+    ytInnertubeClient.stop();
+    ytInnertubeClient.setInsecure();
+    ytInnertubeClient.setTimeout(20000);
 
-    HTTPClient http;
-    http.begin(client, apiUrl);
-    http.setTimeout(30000);
-    http.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("Origin", "https://www.youtube.com");
+    ytInnertubeHttp.end();
+    ytInnertubeHttp.begin(ytInnertubeClient, apiUrl);
+    ytInnertubeHttp.setTimeout(20000);
+    ytInnertubeHttp.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+    ytInnertubeHttp.addHeader("Content-Type", "application/json");
+    ytInnertubeHttp.addHeader("Origin", "https://www.youtube.com");
 
-    int code = http.POST((uint8_t*)body, strlen(body));
+    int code = ytInnertubeHttp.POST((uint8_t*)body, strlen(body));
     Serial.printf("[Innertube] HTTP %d\n", code);
 
     if(code != 200) {
-        http.end();
+        ytInnertubeHttp.end();
         return false;
     }
 
-    // Read response — Innertube can return large JSON, read in chunks
-    static char respBuf[32768];
+    static char respBuf[8192];
     int respLen = 0;
-    WiFiClient* stream = http.getStreamPtr();
-    if(!stream) { http.end(); return false; }
+    WiFiClient* stream = ytInnertubeHttp.getStreamPtr();
+    if(!stream) { ytInnertubeHttp.end(); return false; }
 
     uint32_t startTime = millis();
     while(stream->connected() && millis() - startTime < 15000) {
@@ -469,7 +473,7 @@ static bool ytExtractVideoUrl(const char* videoId, char* urlBuf, int urlBufSize)
         }
     }
     respBuf[respLen] = 0;
-    http.end();
+    ytInnertubeHttp.end();
 
     Serial.printf("[Innertube] Response %d bytes\n", respLen);
 
@@ -771,17 +775,15 @@ static bool ytReconnectStream() {
     ytStreamClient.setInsecure();
     ytStreamClient.setTimeout(60000);
     if(!ytStreamClient.connect(ytServerIP, 443)) return false;
-    char req[2300];
     if(ytExtractedUrl[0]) {
-        char encodedUrl[2100];
-        urlEncode(ytExtractedUrl, encodedUrl, sizeof(encodedUrl));
-        snprintf(req,2300,"GET /api/stream/%s?url=%s HTTP/1.1\r\nHost: %s\r\n\r\n",
-                 ytResults[ytResultSel].id, encodedUrl, ytServerIP);
+        urlEncode(ytExtractedUrl, ytEncodedUrl, sizeof(ytEncodedUrl));
+        snprintf(ytStreamReq,2300,"GET /api/stream/%s?url=%s HTTP/1.1\r\nHost: %s\r\n\r\n",
+                 ytResults[ytResultSel].id, ytEncodedUrl, ytServerIP);
     } else {
-        snprintf(req,2300,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\n\r\n",
+        snprintf(ytStreamReq,2300,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\n\r\n",
                  ytResults[ytResultSel].id, ytServerIP);
     }
-    ytStreamClient.print(req);
+    ytStreamClient.print(ytStreamReq);
     int st = ytReadHTTPStatus();
     if(st == 200) return true;
     if(st == 308 && ytRedirectURL[0]) {
@@ -794,9 +796,9 @@ static bool ytReconnectStream() {
         String host = locStr.substring(hostStart, hostEnd);
         String path = locStr.substring(hostEnd);
         if(ytStreamClient.connect(host.c_str(), 443)) {
-            snprintf(req,256,"GET %s HTTP/1.1\r\nHost: %s\r\n\r\n",
+            snprintf(ytStreamReq,2300,"GET %s HTTP/1.1\r\nHost: %s\r\n\r\n",
                      path.c_str(), host.c_str());
-            ytStreamClient.print(req);
+            ytStreamClient.print(ytStreamReq);
             st = ytReadHTTPStatus();
             return (st == 200);
         }
@@ -1026,8 +1028,8 @@ static void ytHandleKey(OsKey k, char ch) {
                 if(code == 200) { awake = true; }
                 else {
                     fRect(30,75,200,20,C_BLACK);
-                    char err[30]; snprintf(err,30,"Status: %d, retrying...",code);
-                    dTxt(30,75,err,C_YELLOW);
+                    static char wakeErr[40]; snprintf(wakeErr,40,"Status: %d, retrying...",code);
+                    dTxt(30,75,wakeErr,C_YELLOW);
                     M5Cardputer.Display.display();
                     delay(5000);
                 }
@@ -1041,26 +1043,10 @@ static void ytHandleKey(OsKey k, char ch) {
                 ytScreen=YTS_PLAYER; drawYouTube();
                 return;
             }
-            // Step 2: Extract video URL via Innertube API (from home IP, not blocked)
-            clear(C_BLACK);
-            dTxt(30,20,"YouTube Stream",C_RED);
-            dTxt(30,45,"Extracting URL...",C_CYAN);
-            M5Cardputer.Display.display();
-            char extractedUrl[2048];
-            bool urlOk = ytExtractVideoUrl(ytResults[ytResultSel].id, extractedUrl, sizeof(extractedUrl));
-            if(urlOk && extractedUrl[0]) {
-                strncpy(ytExtractedUrl, extractedUrl, sizeof(ytExtractedUrl)-1);
-            } else {
-                ytExtractedUrl[0] = 0;
-                // Fallback: try server-side extraction
-                clear(C_BLACK);
-                dTxt(30,50,"ESP32 extraction failed",C_YELLOW);
-                dTxt(30,70,"Trying server...",C_LGRAY);
-                M5Cardputer.Display.display();
-            }
-            // Step 3: Start MJPEG stream — pass URL to server if extracted
+            // Step 2: Start MJPEG stream — server extracts URL via curl_cffi (browser emulation)
             clear(C_BLACK);
             dTxt(30,50,"Starting stream...",C_CYAN);
+            dTxt(30,70,"(browser emulation)",C_LGRAY);
             M5Cardputer.Display.display();
             Serial.println("[STREAM] Connecting to server...");
             Serial.flush();
@@ -1068,21 +1054,11 @@ static void ytHandleKey(OsKey k, char ch) {
             ytStreamClient.setInsecure();
             ytStreamClient.setTimeout(60000);
             if(ytStreamClient.connect(ytServerIP, 443)) {
-                char req[2300];
-                if(urlOk && extractedUrl[0]) {
-                    // URL-encode the extracted video URL for query parameter
-                    char encodedUrl[2100];
-                    urlEncode(extractedUrl, encodedUrl, sizeof(encodedUrl));
-                    snprintf(req,2300,"GET /api/stream/%s?url=%s HTTP/1.1\r\nHost: %s\r\n\r\n",
-                             ytResults[ytResultSel].id, encodedUrl, ytServerIP);
-                    Serial.printf("[STREAM] Sending request with ESP32-extracted URL\n");
-                } else {
-                    snprintf(req,2300,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\n\r\n",
-                             ytResults[ytResultSel].id, ytServerIP);
-                    Serial.printf("[STREAM] Sending request (server-side extraction)\n");
-                }
+                snprintf(ytStreamReq,2300,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\n\r\n",
+                         ytResults[ytResultSel].id, ytServerIP);
+                Serial.printf("[STREAM] Sending request (server-side extraction)\n");
                 Serial.flush();
-                ytStreamClient.print(req);
+                ytStreamClient.print(ytStreamReq);
                 ytLastStatus = ytReadHTTPStatus();
                 Serial.printf("[STREAM] HTTP status: %d\n", ytLastStatus);
                 Serial.flush();
@@ -1111,8 +1087,8 @@ static void ytHandleKey(OsKey k, char ch) {
                     String host = locStr.substring(hostStart, hostEnd);
                     String path = locStr.substring(hostEnd);
                     if(ytStreamClient.connect(host.c_str(), 443)) {
-                        snprintf(req,256,"GET %s HTTP/1.1\r\nHost: %s\r\n\r\n",path.c_str(),host.c_str());
-                        ytStreamClient.print(req);
+                        snprintf(ytStreamReq,2300,"GET %s HTTP/1.1\r\nHost: %s\r\n\r\n",path.c_str(),host.c_str());
+                        ytStreamClient.print(ytStreamReq);
                         ytLastStatus = ytReadHTTPStatus();
                         if(ytLastStatus == 200) {
                             ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0; ytLastDataTime=millis(); ytReconnectCount=0;

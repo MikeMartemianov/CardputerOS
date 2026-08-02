@@ -97,6 +97,16 @@ class VideoExtractor:
         if result:
             return self._cache_and_return(video_id, result)
 
+        # Strategy 3: curl_cffi browser impersonation (bypasses bot detection)
+        result = self._try_curl_cffi(video_id)
+        if result:
+            return self._cache_and_return(video_id, result)
+
+        # Strategy 4: Playwright browser (bypasses bot detection)
+        result = self._try_playwright(video_id)
+        if result:
+            return self._cache_and_return(video_id, result)
+
         return None
 
     def _cache_and_return(self, video_id, result):
@@ -208,6 +218,82 @@ class VideoExtractor:
 
         except Exception as e:
             print(f"[Innertube] Error: {e}")
+        return None
+
+    def _try_curl_cffi(self, video_id):
+        """Browser impersonation via curl_cffi — mimics Chrome TLS fingerprint.
+        YouTube bot detection checks TLS ClientHello; curl_cffi impersonates
+        a real browser, bypassing 'Sign in to confirm you're not a bot'.
+        Lightweight: no Chromium, no CPU-heavy rendering."""
+        try:
+            from curl_cffi import requests as cffi_requests
+        except ImportError:
+            print("[curl_cffi] Not installed, skipping")
+            return None
+
+        # Try multiple mobile clients — these work without cookies/PO tokens
+        clients = [
+            {'clientName': 'ANDROID', 'clientVersion': '20.10.33',
+             'androidSdkVersion': 33, 'osName': 'Android', 'osVersion': '14'},
+            {'clientName': 'ANDROID', 'clientVersion': '21.02.34',
+             'androidSdkVersion': 35, 'osName': 'Android', 'osVersion': '15'},
+            {'clientName': 'IOS', 'clientVersion': '20.10.4',
+             'deviceMake': 'Apple', 'deviceModel': 'iPhone17,2',
+             'osName': 'iPhone', 'osVersion': '18.3.1'},
+        ]
+
+        for client_ctx in clients:
+            try:
+                payload = {
+                    'context': {'client': client_ctx},
+                    'videoId': video_id,
+                }
+                is_android = client_ctx.get('clientName') == 'ANDROID'
+                headers = {'Origin': 'https://www.youtube.com'}
+                if is_android:
+                    headers['User-Agent'] = (
+                        'com.google.android.youtube/20.10.33 (Linux; U; Android 14) gzip')
+
+                resp = cffi_requests.post(
+                    INNERTUBE_SEARCH_URL.replace('/search?', '/player?'),
+                    json=payload,
+                    impersonate='chrome',
+                    headers=headers,
+                    timeout=20,
+                )
+                if resp.status_code != 200:
+                    print(f"[curl_cffi] HTTP {resp.status_code}")
+                    continue
+
+                body = resp.json()
+                streaming = body.get('streamingData', {})
+                formats = streaming.get('formats', []) + streaming.get('adaptiveFormats', [])
+
+                video_url = None
+                for fmt in formats:
+                    if fmt.get('mimeType', '').startswith('video/') and 'url' in fmt:
+                        if fmt.get('audioQuality'):
+                            video_url = fmt['url']
+                            break
+                if not video_url:
+                    for fmt in formats:
+                        if 'url' in fmt:
+                            video_url = fmt['url']
+                            break
+
+                title = body.get('videoDetails', {}).get('title', 'Unknown')
+                duration = int(body.get('videoDetails', {}).get('lengthSeconds', 0))
+
+                if video_url:
+                    client_name = client_ctx.get('clientName', '?')
+                    print(f"[curl_cffi] Success for {video_id} via {client_name}")
+                    return {'url': video_url, 'title': title, 'duration': duration,
+                            'source': f'curl-{client_name.lower()}'}
+
+            except Exception as e:
+                print(f"[curl_cffi] {client_ctx.get('clientName')} failed: {e}")
+                continue
+
         return None
 
 
