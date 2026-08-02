@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-CardputerOS YouTube Server v4.0 — Multi-strategy extraction
-Strategy 1: Piped API (lightweight, fast)
-Strategy 2: yt-dlp with cookies (reliable)
-Strategy 3: Playwright + cookies (fallback)
+CardputerOS YouTube Server v5.0 — Direct extraction, no third-party deps
+Strategy 1: YouTube Innertube API (direct, lightweight, most reliable)
+Strategy 2: yt-dlp with cookies (proven to work)
+Strategy 3: Piped API instances (if any are alive)
+Strategy 4: Playwright + cookies (last resort)
 """
 
+import hashlib
+import http.cookiejar
 import os
 import json
 import time
@@ -28,12 +31,97 @@ SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 COOKIES_PATH = os.path.join(SERVER_DIR, 'cookies.txt')
 
 # ============================================================
+# YouTube Innertube constants
+# ============================================================
+INNERTUBE_API_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'
+INNERTUBE_SEARCH_URL = f'https://www.youtube.com/youtubei/v1/search?key={INNERTUBE_API_KEY}'
+
+# Client configs — less restrictive clients get fewer bot checks
+INNERTUBE_CLIENTS = [
+    {
+        'name': 'WEB',
+        'clientName': 'WEB',
+        'clientVersion': '2.20240801.00.00',
+        'needs_auth': True,  # Works with SAPISID auth
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    },
+    {
+        'name': 'ANDROID',
+        'clientName': 'ANDROID',
+        'clientVersion': '19.29.37',
+        'api_key': 'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w',
+        'user_agent': 'com.google.android.youtube/19.29.37 (Linux; U; Android 14; en_US) gzip',
+    },
+    {
+        'name': 'MWEB',
+        'clientName': 'MWEB',
+        'clientVersion': '2.20240801.00.00',
+        'needs_auth': True,
+        'user_agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+    },
+]
+
+# ============================================================
+# Cookie helpers
+# ============================================================
+def load_netscape_cookies(path):
+    """Load Netscape format cookies.txt into a list of dicts"""
+    cookies = []
+    if not os.path.exists(path):
+        return cookies
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split('\t')
+            if len(parts) < 7:
+                continue
+            domain, _, path_val, secure, expires, name, value = parts[:7]
+            cookies.append({
+                'name': name,
+                'value': value,
+                'domain': domain,
+                'path': path_val,
+                'secure': secure.upper() == 'TRUE',
+                'expires': int(expires) if expires and expires != '0' else -1,
+            })
+    return cookies
+
+
+def cookies_to_header(cookies, domain='.youtube.com'):
+    """Convert cookie list to Cookie header string"""
+    parts = []
+    for c in cookies:
+        if domain in c['domain']:
+            parts.append(f"{c['name']}={c['value']}")
+    return '; '.join(parts)
+
+
+def compute_sapisid_hash(sapisid, origin='https://www.youtube.com'):
+    """Compute SAPISIDHASH authorization token"""
+    ts = int(time.time())
+    hash_input = f"{ts} {sapisid} {origin}"
+    sha1 = hashlib.sha1(hash_input.encode()).hexdigest()
+    return f"SAPISIDHASH {ts}_{sha1}"
+
+
+# ============================================================
 # Video Cache
 # ============================================================
 class VideoExtractor:
     def __init__(self):
         self._cache = {}
         self._lock = threading.Lock()
+        self._cookies = load_netscape_cookies(COOKIES_PATH)
+        self._cookie_header = cookies_to_header(self._cookies)
+        # Extract SAPISID for auth
+        self._sapisid = None
+        for c in self._cookies:
+            if c['name'] == 'SAPISID':
+                self._sapisid = c['value']
+                break
+        print(f"[Init] Loaded {len(self._cookies)} cookies, SAPISID={'YES' if self._sapisid else 'NO'}")
 
     def _is_cache_valid(self, entry):
         return entry and (time.time() - entry.get('time', 0)) < 3600
@@ -43,17 +131,22 @@ class VideoExtractor:
             if video_id in self._cache and self._is_cache_valid(self._cache[video_id]):
                 return self._cache[video_id]
 
-        # Strategy 1: Piped API (fastest, no browser needed)
-        result = self._try_piped(video_id)
+        # Strategy 1: YouTube Innertube API (direct, no third-party)
+        result = self._try_innertube(video_id)
         if result:
             return self._cache_and_return(video_id, result)
 
-        # Strategy 2: yt-dlp with cookies (reliable)
+        # Strategy 2: yt-dlp with cookies
         result = self._try_ytdlp(video_id)
         if result:
             return self._cache_and_return(video_id, result)
 
-        # Strategy 3: Playwright (last resort)
+        # Strategy 3: Piped API (most are dead, but worth trying)
+        result = self._try_piped(video_id)
+        if result:
+            return self._cache_and_return(video_id, result)
+
+        # Strategy 4: Playwright (last resort)
         result = self._try_playwright(video_id)
         if result:
             return self._cache_and_return(video_id, result)
@@ -67,49 +160,108 @@ class VideoExtractor:
         return result
 
     # ----------------------------------------------------------
-    # Strategy 1: Piped API
+    # Strategy 1: YouTube Innertube API (direct)
     # ----------------------------------------------------------
-    def _try_piped(self, video_id):
-        piped_instances = [
-            'https://api.pipedapi.adminforge.de',
-            'https://pipedapi.r4fo.com',
-            'https://watchapi.whatever.social',
-        ]
-        for instance in piped_instances:
+    def _try_innertube(self, video_id):
+        for client in INNERTUBE_CLIENTS:
             try:
-                url = f'{instance}/streams/{video_id}'
-                req = urllib.request.Request(url, headers={
-                    'User-Agent': 'CardputerOS/4.0',
-                    'Accept': 'application/json',
-                })
-                with urllib.request.urlopen(req, timeout=12) as resp:
-                    data = json.loads(resp.read())
+                payload = {
+                    'context': {
+                        'client': {
+                            'clientName': client['clientName'],
+                            'clientVersion': client['clientVersion'],
+                        },
+                    },
+                    'videoId': video_id,
+                }
 
-                if 'error' in data:
-                    print(f"[Piped] {instance} error: {data['error']}")
+                api_key = client.get('api_key', INNERTUBE_API_KEY)
+                player_url = f'https://www.youtube.com/youtubei/v1/player?key={api_key}'
+
+                headers = {
+                    'Content-Type': 'application/json',
+                    'User-Agent': client.get('user_agent',
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'),
+                    'Origin': 'https://www.youtube.com',
+                    'Referer': f'https://www.youtube.com/watch?v={video_id}',
+                }
+
+                # Add auth if client needs it and cookies are available
+                if client.get('needs_auth'):
+                    if self._sapisid:
+                        headers['Authorization'] = compute_sapisid_hash(self._sapisid)
+                    if self._cookie_header:
+                        headers['Cookie'] = self._cookie_header
+                elif self._cookie_header:
+                    headers['Cookie'] = self._cookie_header
+
+                data = json.dumps(payload).encode('utf-8')
+                req = urllib.request.Request(player_url, data=data, headers=headers, method='POST')
+
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    body = json.loads(resp.read())
+
+                # Check for errors
+                status = body.get('playabilityStatus', {})
+                if status.get('status') == 'ERROR':
+                    print(f"[Innertube] {client['name']}: status=ERROR reason={status.get('reason', '?')[:80]}")
+                    continue
+                if status.get('status') == 'LOGIN_REQUIRED':
+                    print(f"[Innertube] {client['name']}: LOGIN_REQUIRED")
+                    continue
+                if status.get('status') not in ('OK', None):
+                    print(f"[Innertube] {client['name']}: status={status.get('status')} reason={status.get('reason', '')[:80]}")
                     continue
 
+                # Extract streaming data
+                streaming = body.get('streamingData', {})
+                formats = streaming.get('formats', []) + streaming.get('adaptiveFormats', [])
+
+                if not formats:
+                    print(f"[Innertube] {client['name']}: no formats")
+                    continue
+
+                # Find best format with audio (combined video+audio)
                 video_url = None
-                # Prefer streams with audio
-                for stream in data.get('videoStreams', []):
-                    if not stream.get('videoOnly', True):
-                        video_url = stream.get('url')
-                        break
-                # Fallback to any video stream
-                if not video_url and data.get('videoStreams'):
-                    video_url = data['videoStreams'][0].get('url')
+                for fmt in formats:
+                    if fmt.get('mimeType', '').startswith('video/') and 'url' in fmt:
+                        has_audio = fmt.get('audioQuality') is not None
+                        if has_audio:
+                            video_url = fmt['url']
+                            break
+
+                # Fallback: any format with a direct URL
+                if not video_url:
+                    for fmt in formats:
+                        if 'url' in fmt:
+                            video_url = fmt['url']
+                            break
+
+                # Some formats use signatureCipher instead of direct URL
+                if not video_url:
+                    for fmt in formats:
+                        if 'signatureCipher' in fmt:
+                            print(f"[Innertube] {client['name']}: format needs signatureCipher (unsupported)")
+                            break
+
+                title = body.get('videoDetails', {}).get('title', 'Unknown')
+                duration = int(body.get('videoDetails', {}).get('lengthSeconds', 0))
 
                 if video_url:
-                    print(f"[Piped] Success via {instance}")
+                    print(f"[Innertube] Success via {client['name']}, title={title[:50]}")
                     return {
                         'url': video_url,
-                        'title': data.get('title', 'Unknown'),
-                        'duration': data.get('duration', 0),
-                        'source': 'piped',
+                        'title': title,
+                        'duration': duration,
+                        'source': f'innertube_{client["name"]}',
                     }
+                else:
+                    print(f"[Innertube] {client['name']}: no direct URL in {len(formats)} formats")
+
             except Exception as e:
-                print(f"[Piped] {instance} failed: {e}")
+                print(f"[Innertube] {client['name']}: {e}")
                 continue
+
         return None
 
     # ----------------------------------------------------------
@@ -139,7 +291,7 @@ class VideoExtractor:
             ydl_opts['cookies'] = COOKIES_PATH
             print(f"[yt-dlp] Using cookies ({cookies_size} bytes)")
         else:
-            print(f"[yt-dlp] No valid cookies (exists={cookies_exist}, size={cookies_size})")
+            print(f"[yt-dlp] No valid cookies")
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -171,7 +323,50 @@ class VideoExtractor:
             return None
 
     # ----------------------------------------------------------
-    # Strategy 3: Playwright with cookies
+    # Strategy 3: Piped API
+    # ----------------------------------------------------------
+    def _try_piped(self, video_id):
+        piped_instances = [
+            'https://api.pipedapi.adminforge.de',
+            'https://api.piped.private.coffee',
+            'https://pipedapi.r4fo.com',
+        ]
+        for instance in piped_instances:
+            try:
+                url = f'{instance}/streams/{video_id}'
+                req = urllib.request.Request(url, headers={
+                    'User-Agent': 'CardputerOS/5.0',
+                    'Accept': 'application/json',
+                })
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read())
+
+                if 'error' in data:
+                    continue
+
+                video_url = None
+                for stream in data.get('videoStreams', []):
+                    if not stream.get('videoOnly', True):
+                        video_url = stream.get('url')
+                        break
+                if not video_url and data.get('videoStreams'):
+                    video_url = data['videoStreams'][0].get('url')
+
+                if video_url:
+                    print(f"[Piped] Success via {instance}")
+                    return {
+                        'url': video_url,
+                        'title': data.get('title', 'Unknown'),
+                        'duration': data.get('duration', 0),
+                        'source': 'piped',
+                    }
+            except Exception as e:
+                print(f"[Piped] {instance} failed: {e}")
+                continue
+        return None
+
+    # ----------------------------------------------------------
+    # Strategy 4: Playwright with cookies
     # ----------------------------------------------------------
     def _try_playwright(self, video_id):
         try:
@@ -192,7 +387,6 @@ class VideoExtractor:
                         '--disable-dev-shm-usage',
                         '--disable-setuid-sandbox',
                         '--disable-blink-features=AutomationControlled',
-                        '--disable-features=IsolateOrigins,site-per-process',
                     ],
                 )
 
@@ -204,8 +398,7 @@ class VideoExtractor:
                     timezone_id='America/New_York',
                 )
 
-                # Load cookies from cookies.txt (Netscape format)
-                self._load_cookies(context)
+                self._load_playwright_cookies(context)
 
                 page = context.new_page()
                 page.add_init_script("""
@@ -214,9 +407,8 @@ class VideoExtractor:
                 """)
 
                 def on_response(response):
-                    url = response.url
-                    if 'googlevideo.com/videoplayback' in url:
-                        video_urls.append(url)
+                    if 'googlevideo.com/videoplayback' in response.url:
+                        video_urls.append(response.url)
 
                 page.on('response', on_response)
 
@@ -227,27 +419,19 @@ class VideoExtractor:
                     timeout=25000,
                 )
 
-                # Accept consent if present
                 try:
                     page.locator(
                         'button:has-text("Accept all"), '
-                        'button:has-text("Принять все"), '
                         'button:has-text("Reject all")'
                     ).first.click(timeout=3000)
                     time.sleep(2)
                 except Exception:
                     pass
 
-                # Wait for video to load
                 time.sleep(5)
 
-                # Click play
                 try:
-                    page.locator(
-                        '.ytp-large-play-button, '
-                        '.ytp-play-button, '
-                        'button[aria-label*="Play"]'
-                    ).first.click(timeout=5000)
+                    page.locator('.ytp-large-play-button, .ytp-play-button').first.click(timeout=5000)
                     time.sleep(5)
                 except Exception:
                     pass
@@ -255,73 +439,45 @@ class VideoExtractor:
                 title = page.title().replace(' - YouTube', '')
                 duration = self._extract_duration(page)
 
-                print(f"[Playwright] Found {len(video_urls)} video URLs, title={title[:50]}")
+                print(f"[Playwright] Found {len(video_urls)} URLs")
                 browser.close()
 
-            # Pick best URL
             video_url = None
             for url in video_urls:
-                if 'itag=18' in url:  # 360p MP4 with audio
+                if 'itag=18' in url:
                     video_url = url
                     break
             if not video_url and video_urls:
                 video_url = video_urls[0]
 
             if video_url:
-                return {
-                    'url': video_url,
-                    'title': title,
-                    'duration': duration,
-                    'source': 'playwright',
-                }
+                return {'url': video_url, 'title': title, 'duration': duration, 'source': 'playwright'}
 
         except Exception as e:
             print(f"[Playwright] Error: {e}")
-            traceback.print_exc()
-
         return None
 
-    def _load_cookies(self, context):
-        """Load cookies from Netscape format cookies.txt into Playwright context"""
-        if not os.path.exists(COOKIES_PATH):
-            print("[Playwright] No cookies.txt found")
+    def _load_playwright_cookies(self, context):
+        if not self._cookies:
             return
-
-        cookies = []
+        pw_cookies = []
+        for c in self._cookies:
+            cookie = {
+                'name': c['name'],
+                'value': c['value'],
+                'domain': c['domain'],
+                'path': c['path'],
+                'secure': c['secure'],
+                'httpOnly': False,
+            }
+            if c['expires'] > 0:
+                cookie['expires'] = c['expires']
+            pw_cookies.append(cookie)
         try:
-            with open(COOKIES_PATH, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith('#'):
-                        continue
-                    parts = line.split('\t')
-                    if len(parts) < 7:
-                        continue
-                    domain, _, path, secure, expires, name, value = parts[:7]
-                    cookie = {
-                        'name': name,
-                        'value': value,
-                        'domain': domain,
-                        'path': path,
-                        'secure': secure.upper() == 'TRUE',
-                        'httpOnly': False,
-                    }
-                    if expires and expires != '0':
-                        try:
-                            cookie['expires'] = int(expires)
-                        except ValueError:
-                            pass
-                    cookies.append(cookie)
+            context.add_cookies(pw_cookies)
+            print(f"[Playwright] Loaded {len(pw_cookies)} cookies")
         except Exception as e:
-            print(f"[Playwright] Cookie parse error: {e}")
-            return
-
-        if cookies:
-            try:
-                context.add_cookies(cookies)
-                print(f"[Playwright] Loaded {len(cookies)} cookies")
-            except Exception as e:
-                print(f"[Playwright] Cookie load error: {e}")
+            print(f"[Playwright] Cookie error: {e}")
 
     @staticmethod
     def _extract_duration(page):
@@ -340,6 +496,108 @@ class VideoExtractor:
 extractor = VideoExtractor()
 
 # ============================================================
+# Search — YouTube Innertube search (direct) + Piped fallback
+# ============================================================
+def search_youtube(query):
+    """Search via YouTube Innertube API directly"""
+    headers = {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Origin': 'https://www.youtube.com',
+        'Referer': 'https://www.youtube.com/results',
+    }
+    if extractor._sapisid and extractor._cookie_header:
+        headers['Authorization'] = compute_sapisid_hash(extractor._sapisid)
+        headers['Cookie'] = extractor._cookie_header
+    elif extractor._cookie_header:
+        headers['Cookie'] = extractor._cookie_header
+
+    payload = {
+        'context': {
+            'client': {
+                'clientName': 'WEB',
+                'clientVersion': '2.20240801.00.00',
+            },
+        },
+        'query': query,
+    }
+
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(INNERTUBE_SEARCH_URL, data=data, headers=headers, method='POST')
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read())
+
+        results = []
+        for item in body.get('contents', {}).get('twoColumnSearchResultsRenderer', {}).get('primaryContents', {}).get('sectionListRenderer', {}).get('contents', []):
+            for render in item.get('itemSectionRenderer', {}).get('contents', []):
+                vid_renderer = render.get('videoRenderer', {})
+                if not vid_renderer:
+                    continue
+                vid_id = vid_renderer.get('videoId', '')
+                if not vid_id:
+                    continue
+                title_runs = vid_renderer.get('title', {}).get('runs', [])
+                title = ''.join(r.get('text', '') for r in title_runs)
+                length_text = vid_renderer.get('lengthText', {}).get('simpleText', '0:00')
+                view_count = vid_renderer.get('viewCountText', {}).get('simpleText', '0')
+
+                # Parse duration
+                dur_parts = length_text.split(':')
+                if len(dur_parts) == 2:
+                    dur_secs = int(dur_parts[0]) * 60 + int(dur_parts[1])
+                elif len(dur_parts) == 3:
+                    dur_secs = int(dur_parts[0]) * 3600 + int(dur_parts[1]) * 60 + int(dur_parts[2])
+                else:
+                    dur_secs = 0
+
+                results.append({
+                    'id': vid_id,
+                    'title': title[:64],
+                    'duration': length_text,
+                    'views': view_count,
+                })
+
+        if results:
+            print(f"[Innertube Search] Found {len(results)} results")
+        return results[:10]
+
+    except Exception as e:
+        print(f"[Innertube Search] Error: {e}")
+        return []
+
+
+def search_piped(query):
+    """Fallback search via Piped API"""
+    for instance in ['https://api.pipedapi.adminforge.de', 'https://pipedapi.r4fo.com']:
+        try:
+            url = f'{instance}/search?q={urllib.parse.quote(query)}&filter=videos'
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'CardputerOS/5.0',
+                'Accept': 'application/json',
+            })
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            results = []
+            for item in data.get('items', [])[:10]:
+                vid = item.get('url', '').replace('/watch?v=', '')
+                if vid:
+                    results.append({
+                        'id': vid,
+                        'title': item.get('title', '?')[:64],
+                        'duration': f"{item.get('duration', 0) // 60}:{item.get('duration', 0) % 60:02d}",
+                        'views': f"{item.get('views', 0):,}",
+                    })
+            if results:
+                print(f"[Piped Search] Found {len(results)} results via {instance}")
+                return results
+        except Exception as e:
+            print(f"[Piped Search] {instance} failed: {e}")
+    return []
+
+
+# ============================================================
 # API Endpoints
 # ============================================================
 
@@ -349,10 +607,11 @@ def api_scan():
     cookies_size = os.path.getsize(COOKIES_PATH) if cookies_exist else 0
     return jsonify({
         'status': 'ok',
-        'version': '4.0',
+        'version': '5.0',
         'name': 'CardputerOS YouTube Server',
-        'strategies': ['piped', 'yt-dlp', 'playwright'],
+        'strategies': ['innertube', 'yt-dlp', 'piped', 'playwright'],
         'cookies': f'{cookies_size} bytes' if cookies_exist else 'missing',
+        'sapisid': 'yes' if extractor._sapisid else 'no',
         'mjpeg_fps': MJPEG_FPS,
         'mjpeg_resolution': f'{MJPEG_WIDTH}x{MJPEG_HEIGHT}',
     })
@@ -371,7 +630,8 @@ def api_debug(video_id):
         })
     return jsonify({
         'status': 'error',
-        'error': 'All extraction strategies failed. Check Render logs.',
+        'error': 'All extraction strategies failed.',
+        'hint': 'Check Render logs for per-strategy errors.',
     })
 
 
@@ -381,36 +641,15 @@ def api_search():
     if not query:
         return jsonify([])
 
-    piped_instances = [
-        'https://api.pipedapi.adminforge.de',
-        'https://api.piped.private.coffee',
-        'https://pipedapi.r4fo.com',
-    ]
+    # Try Innertube search first (direct, reliable)
+    results = search_youtube(query)
+    if results:
+        return jsonify(results)
 
-    for instance in piped_instances:
-        try:
-            url = f'{instance}/search?q={urllib.parse.quote(query)}&filter=videos'
-            req = urllib.request.Request(url, headers={
-                'User-Agent': 'CardputerOS/4.0',
-                'Accept': 'application/json',
-            })
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read())
-                results = []
-                for item in data.get('items', [])[:10]:
-                    vid = item.get('url', '').replace('/watch?v=', '')
-                    if vid:
-                        results.append({
-                            'id': vid,
-                            'title': item.get('title', '?')[:64],
-                            'duration': f"{item.get('duration', 0) // 60}:{item.get('duration', 0) % 60:02d}",
-                            'views': f"{item.get('views', 0):,}",
-                        })
-                if results:
-                    return jsonify(results)
-        except Exception as e:
-            print(f"[Search] {instance} failed: {e}")
-            continue
+    # Fallback to Piped
+    results = search_piped(query)
+    if results:
+        return jsonify(results)
 
     return jsonify([])
 
@@ -510,12 +749,13 @@ def api_audio(video_id):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     print("=" * 50)
-    print("  CardputerOS YouTube Server v4.0")
+    print("  CardputerOS YouTube Server v5.0")
     print("=" * 50)
     cookies_exist = os.path.exists(COOKIES_PATH)
     cookies_size = os.path.getsize(COOKIES_PATH) if cookies_exist else 0
     print(f"  Cookies: {'OK' if cookies_exist and cookies_size > 50 else 'MISSING'} ({cookies_size} bytes)")
-    print(f"  Strategies: Piped API -> yt-dlp -> Playwright")
+    print(f"  SAPISID: {'YES' if extractor._sapisid else 'NO'}")
+    print(f"  Strategies: Innertube -> yt-dlp -> Piped -> Playwright")
     print(f"  Port: {port}")
     print("=" * 50)
     app.run(host='0.0.0.0', port=port, debug=False)
