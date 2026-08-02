@@ -44,14 +44,14 @@ class VideoCache:
         self._lock = threading.Lock()
     
     def get_stream_url(self, video_id):
-        """Get direct video stream URL using Piped API (no yt-dlp needed)"""
+        """Get direct video stream URL - try Piped API first, then yt-dlp"""
         with self._lock:
             if video_id in self._cache:
                 cached = self._cache[video_id]
                 if time.time() - cached.get('time', 0) < 3600:
                     return cached
-        
-        # Try Piped API instances for stream info
+
+        # Try Piped API instances first
         piped_instances = [
             'https://api.piped.private.coffee',
             'https://pipedapi.adminforge.de',
@@ -71,22 +71,15 @@ class VideoCache:
                         print(f"Piped error for {video_id}: {data['error']}")
                         continue
                     
-                    # Find lowest quality video stream with audio
+                    # Find video stream with audio
                     video_url = None
                     for stream in data.get('videoStreams', []):
                         if not stream.get('videoOnly', True):
                             video_url = stream.get('url')
                             break
                     
-                    # Fallback: any video stream
                     if not video_url and data.get('videoStreams'):
                         video_url = data['videoStreams'][0].get('url')
-                    
-                    if not video_url:
-                        # Try audioStreams as fallback
-                        for stream in data.get('audioStreams', []):
-                            video_url = stream.get('url')
-                            break
                     
                     if video_url:
                         with self._lock:
@@ -103,7 +96,44 @@ class VideoCache:
                 print(f"Piped API error ({instance}): {e}")
                 continue
         
-        return None
+        # Fallback: try yt-dlp with cookies
+        try:
+            cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+            ydl_opts = {
+                'format': 'worst[ext=mp4]',
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                },
+            }
+            if os.path.exists(cookies_path):
+                ydl_opts['cookies'] = cookies_path
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+                
+                if 'url' in info:
+                    url = info['url']
+                elif 'formats' in info and info['formats']:
+                    formats = sorted(info['formats'], key=lambda f: f.get('height', 9999))
+                    url = formats[0]['url']
+                else:
+                    return None
+                
+                with self._lock:
+                    self._cache[video_id] = {
+                        'url': url,
+                        'title': info.get('title', 'Unknown'),
+                        'duration': info.get('duration', 0),
+                        'thumbnail': info.get('thumbnail', ''),
+                        'time': time.time(),
+                    }
+                return self._cache[video_id]
+        except Exception as e:
+            print(f"yt-dlp error for {video_id}: {e}")
+            return None
     
     def search(self, query):
         """Search YouTube via Piped API"""
