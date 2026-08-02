@@ -498,8 +498,8 @@ extractor = VideoExtractor()
 # ============================================================
 # Search — YouTube Innertube search (direct) + Piped fallback
 # ============================================================
-def search_youtube(query):
-    """Search via YouTube Innertube API directly"""
+def search_youtube_innertube(query):
+    """Search via YouTube Innertube API — returns Piped-compatible format"""
     headers = {
         'Content-Type': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -541,22 +541,37 @@ def search_youtube(query):
                 title_runs = vid_renderer.get('title', {}).get('runs', [])
                 title = ''.join(r.get('text', '') for r in title_runs)
                 length_text = vid_renderer.get('lengthText', {}).get('simpleText', '0:00')
-                view_count = vid_renderer.get('viewCountText', {}).get('simpleText', '0')
+                view_count_text = vid_renderer.get('viewCountText', {}).get('simpleText', '0')
+                channel_runs = vid_renderer.get('ownerText', {}).get('runs', [])
+                channel = ''.join(r.get('text', '') for r in channel_runs)
 
-                # Parse duration
+                # Parse duration to seconds
                 dur_parts = length_text.split(':')
+                dur_secs = 0
                 if len(dur_parts) == 2:
                     dur_secs = int(dur_parts[0]) * 60 + int(dur_parts[1])
                 elif len(dur_parts) == 3:
                     dur_secs = int(dur_parts[0]) * 3600 + int(dur_parts[1]) * 60 + int(dur_parts[2])
-                else:
-                    dur_secs = 0
+
+                # Parse views to int
+                views_str = view_count_text.replace(',', '').replace(' views', '').replace(' view', '')
+                try:
+                    views = int(views_str)
+                except ValueError:
+                    views = 0
+
+                # Thumbnail
+                thumbs = vid_renderer.get('thumbnail', {}).get('thumbnails', [])
+                thumb_url = thumbs[-1]['url'] if thumbs else f'https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg'
 
                 results.append({
-                    'id': vid_id,
+                    'url': f'/watch?v={vid_id}',
                     'title': title[:64],
-                    'duration': length_text,
-                    'views': view_count,
+                    'uploaderName': channel[:32],
+                    'thumbnail': thumb_url,
+                    'duration': dur_secs,
+                    'views': views,
+                    'type': 'stream',
                 })
 
         if results:
@@ -635,23 +650,67 @@ def api_debug(video_id):
     })
 
 
+@app.route('/streams/<video_id>')
+def piped_streams(video_id):
+    """Piped-compatible /streams endpoint — used by Cardputer firmware"""
+    info = extractor.get_video_url(video_id)
+    if not info:
+        return jsonify({'error': 'Video not found'}), 404
+
+    # Build Piped-compatible response
+    return jsonify({
+        'title': info.get('title', 'Unknown'),
+        'description': '',
+        'uploads': '',
+        'uploaderUrl': '',
+        'uploader': info.get('title', 'Unknown'),
+        'uploaderAvatar': '',
+        'thumbnailUrl': f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg',
+        'uploaderName': info.get('title', 'Unknown'),
+        'duration': info.get('duration', 0),
+        'views': 0,
+        'likes': 0,
+        'dislikes': 0,
+        'uploaderSubscriberCount': 0,
+        'hls': '',
+        'dashboards': '',
+        'relatedStreams': [],
+        'relatedClientStreams': [],
+        'previewFrames': [],
+        'audioStreams': [],
+        'videoStreams': [
+            {
+                'url': info.get('url', ''),
+                'quality': '360p',
+                'format': 'MPEG_4',
+                'codec': 'avc1.42001E',
+                'videoOnly': False,
+                'bitrate': 650000,
+                'mimeType': 'video/mp4; codecs="avc1.42001E, mp4a.40.2"',
+                'codecInfo': 'avc1.42001E, mp4a.40.2',
+            }
+        ],
+    })
+
+
 @app.route('/api/search')
+@app.route('/search')
 def api_search():
     query = request.args.get('q', '')
     if not query:
-        return jsonify([])
+        return jsonify({'items': []})
 
     # Try Innertube search first (direct, reliable)
-    results = search_youtube(query)
-    if results:
-        return jsonify(results)
+    innertube_results = search_youtube_innertube(query)
+    if innertube_results:
+        return jsonify({'items': innertube_results})
 
     # Fallback to Piped
-    results = search_piped(query)
-    if results:
-        return jsonify(results)
+    piped_results = search_piped(query)
+    if piped_results:
+        return jsonify({'items': piped_results})
 
-    return jsonify([])
+    return jsonify({'items': []})
 
 
 @app.route('/api/stream/<video_id>')

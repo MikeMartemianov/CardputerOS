@@ -30,7 +30,7 @@ static int8_t settingsRow=0, brightness=255;
 // YouTube Cloudflare Worker proxy — set your worker URL here
 static char ytWorkerUrl[128]=""; // Set Cloudflare Worker URL here if deployed
 // Companion server for video streaming  
-static char ytServerIP[64]="192.168.0.82";
+static char ytServerIP[64]="cardputeros.onrender.com";
 // Storyboard "video" player
 struct YtStoryboard{char url[200];int frameW;int frameH;int total;int durPerFrame;int perRow;int perCol;};
 static YtStoryboard ytSb={};static int ytSbCurFrame=0;static uint32_t ytSbLastFrame=0;
@@ -351,9 +351,11 @@ static int jsonFind(const char* json, const char* key, char* val, int valSize) {
 }
 static int jsonFindInt(const char* json, const char* key) { char v[32]; jsonFind(json,key,v,32); return atoi(v); }
 static void ytFetchUrl(const char* path, char* buf, int bufSize) {
-    // Build URL: use Worker proxy if available, otherwise direct Piped API
+    // Build URL: use companion server for everything (search + streams)
     char url[300];
-    if(ytWorkerUrl[0]) {
+    if(ytServerIP[0]) {
+        snprintf(url,300,"https://%s%s",ytServerIP,path);
+    } else if(ytWorkerUrl[0]) {
         snprintf(url,300,"%s%s",ytWorkerUrl,path);
     } else {
         snprintf(url,300,"https://api.piped.private.coffee%s",path);
@@ -880,7 +882,7 @@ static OsKey scanKeyboard(char* ch){
 // BOOT
 // ============================================================
 static void bootScreen(){
-    clear(C_BLACK);dTxt(30,15,"CardputerOS",C_CYAN,2);dTxt(60,45,"v0.5.0",C_WHITE);
+    clear(C_BLACK);    dTxt(30,15,"CardputerOS",C_CYAN,2);dTxt(60,45,"v0.6.0",C_WHITE);
     dTxt(10,65,"ESP32-S3 240MHz",C_LGRAY);
     char s[64];snprintf(s,64,"Flash:%dMB Free:%.0fKB",ESP.getFlashChipSize()/(1024*1024),ESP.getFreeHeap()/1024.0f);
     dTxt(10,77,s,C_LGRAY);
