@@ -755,6 +755,16 @@ def api_stream(video_id):
     cookie_header = extractor._cookie_header if extractor._cookie_header else ''
 
     def generate_mjpeg():
+        # Force yt-dlp extraction (innertube URLs get 403)
+        with extractor._lock:
+            extractor._cache.pop(video_id, None)  # Clear stale cache
+        info2 = extractor._try_ytdlp(video_id)
+        if info2 and info2.get('url'):
+            video_url = info2['url']
+            print(f"[Stream] Using yt-dlp URL for {video_id}")
+        else:
+            print(f"[Stream] yt-dlp failed, using cached URL source={info.get('source','?')}")
+
         cmd = [
             'ffmpeg', '-re',
         ]
