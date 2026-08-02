@@ -1,0 +1,15 @@
+- generic [active] [ref=f8e1]:
+  - banner [ref=f8e4]:
+    - generic [ref=f8e6]:
+      - generic [ref=f8e7]:
+        - button "Гид" [ref=f8e9] [cursor=pointer]
+        - generic [ref=f8e11]:
+          - link:
+            - /url: /
+      - search [ref=f8e13]:
+        - generic [ref=f8e15]:
+          - generic [ref=f8e16]:
+            - combobox [expanded] [ref=f8e18]
+            - button [ref=f8e21] [cursor=pointer]
+          - button "Search" [ref=f8e22] [cursor=pointer]
+  - button
