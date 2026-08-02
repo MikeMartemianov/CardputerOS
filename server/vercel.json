@@ -10,10 +10,5 @@
       "src": "/(.*)",
       "dest": "youtube_proxy.py"
     }
-  ],
-  "functions": {
-    "youtube_proxy.py": {
-      "maxDuration": 300
-    }
-  }
+  ]
 }

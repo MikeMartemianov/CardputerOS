@@ -1,15 +1,14 @@
 {
-  "version": 2,
   "builds": [
     {
-      "src": "youtube_proxy.py",
+      "src": "server/youtube_proxy.py",
       "use": "@vercel/python"
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "youtube_proxy.py"
+      "dest": "server/youtube_proxy.py"
     }
   ]
 }
