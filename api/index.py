@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 """
-CardputerOS YouTube Server v2 — Chromium-based
-Uses Playwright (Chromium) instead of yt-dlp.
-YouTube sees a real browser, no bot detection.
-
-Usage:
-    pip install flask playwright
-    playwright install chromium
-    python youtube_chromium.py
+CardputerOS YouTube Server — Chromium on Render
+Uses system Chromium (no cookies needed — YouTube sees real browser)
 """
 
 import os
@@ -15,6 +9,8 @@ import json
 import time
 import subprocess
 import threading
+import urllib.request
+import urllib.parse
 from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
@@ -23,51 +19,29 @@ MJPEG_FPS = 15
 MJPEG_QUALITY = 60
 MJPEG_WIDTH = 240
 MJPEG_HEIGHT = 135
-AUDIO_SAMPLE_RATE = 22050
 
 # ============================================================
-# Chromium-based video URL extraction
+# Find Chromium executable
 # ============================================================
-class ChromiumExtractor:
+def find_chromium():
+    for path in ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']:
+        if os.path.exists(path):
+            return path
+    return 'chromium'
+
+CHROMIUM_PATH = find_chromium()
+print(f"[OK] Chromium: {CHROMIUM_PATH}")
+
+# ============================================================
+# Video extraction with Playwright + system Chromium
+# ============================================================
+class VideoExtractor:
     def __init__(self):
         self._cache = {}
         self._lock = threading.Lock()
-        self._browser = None
-        self._playwright = None
-        self._context = None
-    
-    def _ensure_browser(self):
-        if self._browser and self._browser.is_connected():
-            return
-        try:
-            from playwright.sync_api import sync_playwright
-            if not self._playwright:
-                self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
-            )
-            self._context = self._browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                viewport={'width': 1280, 'height': 720}
-            )
-            # Accept YouTube consent
-            page = self._context.new_page()
-            page.goto('https://www.youtube.com', wait_until='domcontentloaded', timeout=15000)
-            try:
-                accept_btn = page.locator('button:has-text("Accept all"), button:has-text("Принять все")')
-                if accept_btn.count() > 0:
-                    accept_btn.first.click(timeout=3000)
-                    time.sleep(1)
-            except:
-                pass
-            page.close()
-            print("[Chromium] Browser ready")
-        except Exception as e:
-            print(f"[Chromium] Error: {e}")
     
     def get_video_url(self, video_id):
-        """Get direct video stream URL using Chromium"""
+        """Get video stream URL using real Chromium browser"""
         with self._lock:
             if video_id in self._cache:
                 cached = self._cache[video_id]
@@ -75,69 +49,92 @@ class ChromiumExtractor:
                     return cached
         
         try:
-            self._ensure_browser()
+            from playwright.sync_api import sync_playwright
             
             video_urls = []
-            audio_urls = []
             
-            def handle_response(response):
-                url = response.url
-                if 'googlevideo.com/videoplayback' in url:
-                    video_urls.append(url)
-            
-            page = self._context.new_page()
-            page.on('response', handle_response)
-            
-            # Navigate to video
-            page.goto(f'https://www.youtube.com/watch?v={video_id}', 
-                     wait_until='domcontentloaded', timeout=30000)
-            
-            # Wait for video to start loading
-            time.sleep(5)
-            
-            # Try to click play if needed
-            try:
-                page.locator('.ytp-large-play-button, .ytp-play-button').first.click(timeout=3000)
-                time.sleep(3)
-            except:
-                pass
-            
-            # Wait for network requests
-            time.sleep(3)
-            
-            # Get title
-            title = page.title()
-            if ' - YouTube' in title:
-                title = title.replace(' - YouTube', '')
-            
-            # Get duration from page
-            try:
-                duration_text = page.locator('.ytp-time-duration').inner_text(timeout=3000)
-                parts = duration_text.split(':')
-                if len(parts) == 2:
-                    duration = int(parts[0]) * 60 + int(parts[1])
-                elif len(parts) == 3:
-                    duration = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-                else:
-                    duration = 0
-            except:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    executable_path=CHROMIUM_PATH,
+                    args=[
+                        '--no-sandbox',
+                        '--disable-gpu',
+                        '--disable-dev-shm-usage',
+                        '--disable-setuid-sandbox',
+                        '--single-process',
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-features=IsolateOrigins,site-per-process',
+                    ]
+                )
+                
+                context = browser.new_context(
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                    locale='en-US',
+                    timezone_id='America/New_York',
+                )
+                
+                # Remove webdriver detection
+                page = context.new_page()
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                    window.chrome = { runtime: {} };
+                """)
+                
+                def on_response(response):
+                    url = response.url
+                    if 'googlevideo.com/videoplayback' in url:
+                        video_urls.append(url)
+                
+                page.on('response', on_response)
+                
+                print(f"[Chromium] Loading video {video_id}...")
+                page.goto(f'https://www.youtube.com/watch?v={video_id}',
+                         wait_until='domcontentloaded', timeout=25000)
+                
+                # Accept consent if present
+                try:
+                    page.locator('button:has-text("Accept all"), button:has-text("Принять все"), button:has-text("Reject all")').first.click(timeout=3000)
+                    time.sleep(2)
+                except:
+                    pass
+                
+                # Wait for video to load
+                time.sleep(5)
+                
+                # Click play
+                try:
+                    page.locator('.ytp-large-play-button, .ytp-play-button, button[aria-label*="Play"]').first.click(timeout=5000)
+                    time.sleep(5)
+                except:
+                    pass
+                
+                # Get title
+                title = page.title().replace(' - YouTube', '')
+                
+                # Get duration
                 duration = 0
+                try:
+                    dur_text = page.locator('.ytp-time-duration').inner_text(timeout=3000)
+                    parts = dur_text.split(':')
+                    if len(parts) == 2:
+                        duration = int(parts[0]) * 60 + int(parts[1])
+                    elif len(parts) == 3:
+                        duration = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                except:
+                    pass
+                
+                print(f"[Chromium] Found {len(video_urls)} video URLs, title={title[:50]}")
+                browser.close()
             
-            page.close()
-            
-            # Use the best URL found
+            # Pick best URL
             video_url = None
-            if video_urls:
-                # Prefer itag=18 (360p mp4 with audio)
-                for url in video_urls:
-                    if 'itag=18' in url:
-                        video_url = url
-                        break
-                if not video_url:
-                    video_url = video_urls[0]
-            
-            if not video_url and audio_urls:
-                video_url = audio_urls[0]
+            for url in video_urls:
+                if 'itag=18' in url:  # 360p MP4 with audio
+                    video_url = url
+                    break
+            if not video_url and video_urls:
+                video_url = video_urls[0]
             
             if video_url:
                 with self._lock:
@@ -152,16 +149,10 @@ class ChromiumExtractor:
             return None
             
         except Exception as e:
-            print(f"[Chromium] Error for {video_id}: {e}")
+            print(f"[Chromium] Error: {e}")
             return None
-    
-    def close(self):
-        if self._browser:
-            self._browser.close()
-        if self._playwright:
-            self._playwright.stop()
 
-extractor = ChromiumExtractor()
+extractor = VideoExtractor()
 
 # ============================================================
 # API Endpoints
@@ -170,9 +161,10 @@ extractor = ChromiumExtractor()
 @app.route('/api/scan')
 def api_scan():
     return jsonify({
-        'status': 'ok', 'version': '2.0',
+        'status': 'ok', 'version': '3.0',
         'name': 'CardputerOS YouTube Server (Chromium)',
-        'mjpeg_fps': MJPEG_FPS, 'mjpeg_quality': MJPEG_QUALITY,
+        'chromium': CHROMIUM_PATH,
+        'mjpeg_fps': MJPEG_FPS,
         'mjpeg_resolution': f'{MJPEG_WIDTH}x{MJPEG_HEIGHT}',
     })
 
@@ -184,9 +176,33 @@ def api_debug(video_id):
             'status': 'ok',
             'title': info.get('title', '?'),
             'duration': info.get('duration', 0),
-            'url': info.get('url', 'NONE')[:150],
+            'url': info.get('url', '')[:120],
         })
-    return jsonify({'status': 'error', 'error': 'Video not found or blocked'})
+    return jsonify({'status': 'error', 'error': 'Chromium could not extract video URL. Check Render logs for details.'})
+
+@app.route('/api/search')
+def api_search():
+    query = request.args.get('q', '')
+    if not query:
+        return jsonify([])
+    try:
+        url = f'https://api.piped.private.coffee/search?q={urllib.parse.quote(query)}&filter=videos'
+        req = urllib.request.Request(url, headers={'User-Agent': 'CardputerOS/3.0'})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            results = []
+            for item in data.get('items', [])[:10]:
+                vid = item.get('url', '').replace('/watch?v=', '')
+                if vid:
+                    results.append({
+                        'id': vid,
+                        'title': item.get('title', '?')[:64],
+                        'duration': f"{item.get('duration', 0)//60}:{item.get('duration', 0)%60:02d}",
+                        'views': f"{item.get('views', 0):,}",
+                    })
+            return jsonify(results)
+    except:
+        return jsonify([])
 
 @app.route('/api/stream/<video_id>')
 def api_stream(video_id):
@@ -214,14 +230,11 @@ def api_stream(video_id):
                 chunk = process.stdout.read(65536)
                 if not chunk:
                     break
-                # Extract JPEG frames
                 pos = 0
                 while pos < len(chunk):
-                    # Find JPEG SOI (FFD8)
                     soi = chunk.find(b'\xff\xd8', pos)
                     if soi == -1:
                         break
-                    # Find JPEG EOI (FFD9)
                     eoi = chunk.find(b'\xff\xd9', soi)
                     if eoi == -1:
                         break
@@ -239,32 +252,6 @@ def api_stream(video_id):
         mimetype='multipart/x-mixed-replace; boundary=frame',
         headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive'}
     )
-
-@app.route('/api/search')
-def api_search():
-    query = request.args.get('q', '')
-    if not query:
-        return jsonify([])
-    # Use Piped for search (lightweight, no browser needed)
-    import urllib.request, urllib.parse
-    try:
-        url = f'https://api.piped.private.coffee/search?q={urllib.parse.quote(query)}&filter=videos'
-        req = urllib.request.Request(url, headers={'User-Agent': 'CardputerOS/2.0'})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            results = []
-            for item in data.get('items', [])[:10]:
-                vid = item.get('url', '').replace('/watch?v=', '')
-                if vid:
-                    results.append({
-                        'id': vid,
-                        'title': item.get('title', '?')[:64],
-                        'duration': f"{item.get('duration', 0)//60}:{item.get('duration', 0)%60:02d}",
-                        'views': f"{item.get('views', 0):,}",
-                    })
-            return jsonify(results)
-    except:
-        return jsonify([])
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
