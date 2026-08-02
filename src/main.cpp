@@ -30,7 +30,7 @@ static int8_t settingsRow=0, brightness=255;
 // YouTube Cloudflare Worker proxy — set your worker URL here
 static char ytWorkerUrl[128]=""; // Set Cloudflare Worker URL here if deployed
 // Companion server for video streaming  
-static char ytServerIP[64]="cardputeros.onrender.com";
+static char ytServerIP[64]="cardputer-os.vercel.app";
 // Storyboard "video" player
 struct YtStoryboard{char url[200];int frameW;int frameH;int total;int durPerFrame;int perRow;int perCol;};
 static YtStoryboard ytSb={};static int ytSbCurFrame=0;static uint32_t ytSbLastFrame=0;
@@ -783,14 +783,9 @@ static void ytHandleKey(OsKey k, char ch) {
             }
             if(!ytStreaming) {
                 clear(C_BLACK);
-                dTxt(30,30,"Stream failed",C_RED);
-                // Show debug: status code
-                char dbg[64];
-                snprintf(dbg,64,"code:%d id:%.10s", 
-                    ytLastStatus, ytResults[ytResultSel].id);
-                dTxt(30,50,dbg,C_YELLOW);
+                dTxt(30,50,"Stream failed",C_RED);
                 M5Cardputer.Display.display();
-                delay(3000);
+                delay(2000);
                 ytScreen=YTS_PLAYER; drawYouTube();
             }
         }

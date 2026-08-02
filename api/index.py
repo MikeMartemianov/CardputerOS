@@ -96,9 +96,11 @@ class VideoCache:
                 print(f"Piped API error ({instance}): {e}")
                 continue
         
-        # Fallback: try yt-dlp with cookies
+        # Fallback: try yt-dlp with cookies and/or OAuth
         try:
             cookies_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+            oauth_token = os.environ.get('OAUTH_TOKEN', '')
+            
             ydl_opts = {
                 'format': 'worst[ext=mp4]',
                 'quiet': True,
@@ -110,6 +112,16 @@ class VideoCache:
             }
             if os.path.exists(cookies_path):
                 ydl_opts['cookies'] = cookies_path
+            
+            # Write OAuth token to temp file for yt-dlp
+            if oauth_token:
+                oauth_path = '/tmp/yt_oauth_token'
+                with open(oauth_path, 'w') as f:
+                    f.write(oauth_token)
+                ydl_opts['username'] = 'oauth2'
+                ydl_opts['password'] = ''
+                # Pass token via extractor args
+                ydl_opts['extractor_args'] = {'youtube': {'oauth2_token': [oauth_path]}}
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
