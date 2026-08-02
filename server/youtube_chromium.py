@@ -697,7 +697,6 @@ def api_ffmpeg_test(video_id):
     cmd += ['-i', video_url, '-f', 'mjpeg', '-vf', f'scale={MJPEG_WIDTH}:{MJPEG_HEIGHT}', '-r', '5', '-q:v', '80', '-an', '-frames:v', '1', '-y', '/tmp/test_frame.jpg']
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=20)
-        import os
         frame_size = os.path.getsize('/tmp/test_frame.jpg') if os.path.exists('/tmp/test_frame.jpg') else 0
         return jsonify({
             'status': 'ok' if frame_size > 100 else 'error',
