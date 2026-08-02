@@ -650,6 +650,35 @@ def api_debug(video_id):
     })
 
 
+@app.route('/api/ffmpeg_test/<video_id>')
+def api_ffmpeg_test(video_id):
+    """Test ffmpeg on a video URL — returns stderr for debugging"""
+    info = extractor.get_video_url(video_id)
+    if not info:
+        return jsonify({'error': 'No video URL'}), 404
+    video_url = info['url']
+    cookie_header = extractor._cookie_header if extractor._cookie_header else ''
+    cmd = ['ffmpeg', '-re']
+    if cookie_header:
+        cmd += ['-headers', f'Cookie: {cookie_header}\r\nUser-Agent: Mozilla/5.0\r\n']
+    else:
+        cmd += ['-headers', 'User-Agent: Mozilla/5.0\r\n']
+    cmd += ['-i', video_url, '-f', 'mjpeg', '-vf', f'scale={MJPEG_WIDTH}:{MJPEG_HEIGHT}', '-r', '5', '-q:v', '80', '-an', '-frames:v', '1', '-y', '/tmp/test_frame.jpg']
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=20)
+        import os
+        frame_size = os.path.getsize('/tmp/test_frame.jpg') if os.path.exists('/tmp/test_frame.jpg') else 0
+        return jsonify({
+            'status': 'ok' if frame_size > 100 else 'error',
+            'exit_code': proc.returncode,
+            'frame_size': frame_size,
+            'stderr': proc.stderr.decode('utf-8', errors='replace')[-500:],
+            'url_len': len(video_url),
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)})
+
+
 @app.route('/streams/<video_id>')
 def piped_streams(video_id):
     """Piped-compatible /streams endpoint — used by Cardputer firmware"""
