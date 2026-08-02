@@ -131,13 +131,13 @@ class VideoExtractor:
             if video_id in self._cache and self._is_cache_valid(self._cache[video_id]):
                 return self._cache[video_id]
 
-        # Strategy 1: YouTube Innertube API (direct, no third-party)
-        result = self._try_innertube(video_id)
+        # Strategy 1: yt-dlp with cookies (most reliable — handles throttling + IP binding)
+        result = self._try_ytdlp(video_id)
         if result:
             return self._cache_and_return(video_id, result)
 
-        # Strategy 2: yt-dlp with cookies
-        result = self._try_ytdlp(video_id)
+        # Strategy 2: YouTube Innertube API (direct, may get 403 on playback)
+        result = self._try_innertube(video_id)
         if result:
             return self._cache_and_return(video_id, result)
 
@@ -624,7 +624,7 @@ def api_scan():
         'status': 'ok',
         'version': '5.0',
         'name': 'CardputerOS YouTube Server',
-        'strategies': ['innertube', 'yt-dlp', 'piped', 'playwright'],
+        'strategies': ['yt-dlp', 'innertube', 'piped', 'playwright'],
         'cookies': f'{cookies_size} bytes' if cookies_exist else 'missing',
         'sapisid': 'yes' if extractor._sapisid else 'no',
         'mjpeg_fps': MJPEG_FPS,
@@ -886,7 +886,7 @@ if __name__ == '__main__':
     cookies_size = os.path.getsize(COOKIES_PATH) if cookies_exist else 0
     print(f"  Cookies: {'OK' if cookies_exist and cookies_size > 50 else 'MISSING'} ({cookies_size} bytes)")
     print(f"  SAPISID: {'YES' if extractor._sapisid else 'NO'}")
-    print(f"  Strategies: Innertube -> yt-dlp -> Piped -> Playwright")
+    print(f"  Strategies: yt-dlp -> Innertube -> Piped -> Playwright")
     print(f"  Port: {port}")
     print("=" * 50)
     app.run(host='0.0.0.0', port=port, debug=False)
