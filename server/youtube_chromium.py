@@ -661,6 +661,32 @@ def api_ffmpeg_test(video_id):
     info = extractor.get_video_url(video_id)
     if not info:
         return jsonify({'error': 'No video URL'}), 404
+    video_url = info.get('url', '')
+    source = info.get('source', '?')
+    cookie_header = extractor._cookie_header if extractor._cookie_header else ''
+
+    # If innertube URL, try yt-dlp separately for diagnostics
+    ytdlp_error = None
+    if 'innertube' in source:
+        try:
+            import yt_dlp as ydl_mod
+            cookies_path = COOKIES_PATH
+            opts = {
+                'format': 'worst[ext=mp4]/worst',
+                'quiet': True,
+                'no_warnings': True,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                },
+            }
+            if os.path.exists(cookies_path) and os.path.getsize(cookies_path) > 50:
+                opts['cookies'] = cookies_path
+            with ydl_mod.YoutubeDL(opts) as ydl:
+                info2 = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+                video_url = info2.get('url', video_url)
+                source = 'yt-dlp_direct'
+        except Exception as e:
+            ytdlp_error = str(e)
     video_url = info['url']
     cookie_header = extractor._cookie_header if extractor._cookie_header else ''
     cmd = ['ffmpeg', '-re']
@@ -679,6 +705,8 @@ def api_ffmpeg_test(video_id):
             'frame_size': frame_size,
             'stderr': proc.stderr.decode('utf-8', errors='replace')[-500:],
             'url_len': len(video_url),
+            'source': source,
+            'ytdlp_error': ytdlp_error,
         })
     except Exception as e:
         return jsonify({'status': 'error', 'error': str(e)})
