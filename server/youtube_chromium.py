@@ -288,6 +288,31 @@ def search_youtube_innertube(query):
 def api_scan():
     cookies_exist = os.path.exists(COOKIES_PATH)
     cookies_size = os.path.getsize(COOKIES_PATH) if cookies_exist else 0
+    
+    # Check yt-dlp + Node.js availability
+    ytdlp_ok = False
+    node_ok = False
+    ytdlp_ver = ''
+    node_ver = ''
+    ejs_ok = False
+    try:
+        import yt_dlp
+        ytdlp_ver = yt_dlp.version.__version__
+        ytdlp_ok = True
+    except Exception as e:
+        ytdlp_ver = str(e)
+    try:
+        r = subprocess.run(['node', '--version'], capture_output=True, timeout=5, text=True)
+        node_ver = r.stdout.strip()
+        node_ok = r.returncode == 0
+    except Exception as e:
+        node_ver = str(e)
+    try:
+        import yt_dlp_ejs
+        ejs_ok = True
+    except ImportError:
+        pass
+    
     return jsonify({
         'status': 'ok',
         'version': '6.0',
@@ -295,8 +320,10 @@ def api_scan():
         'strategies': ['yt-dlp', 'innertube'],
         'cookies': f'{cookies_size} bytes' if cookies_exist else 'missing',
         'sapisid': 'yes' if extractor._sapisid else 'no',
+        'ytdlp': f'{ytdlp_ver} ok={ytdlp_ok}',
+        'node': f'{node_ver} ok={node_ok}',
+        'ejs': ejs_ok,
         'mjpeg_fps': MJPEG_FPS,
-        'mjpeg_resolution': f'{MJPEG_WIDTH}x{MJPEG_HEIGHT}',
     })
 
 
