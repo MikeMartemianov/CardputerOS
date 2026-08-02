@@ -545,8 +545,8 @@ static char ytRedirectURL[256]="";
 static int ytReadHTTPStatus() {
     ytRedirectURL[0]=0;
     uint32_t start = millis();
-    // Wait for first data
-    while(!ytStreamClient.available() && ytStreamClient.connected() && millis()-start < 30000) {
+    // Wait for first data — server may need time for yt-dlp extraction
+    while(!ytStreamClient.available() && ytStreamClient.connected() && millis()-start < 45000) {
         delay(100);
     }
     // Read status line
@@ -554,7 +554,7 @@ static int ytReadHTTPStatus() {
     char lineBuf[256]=""; int linePos=0;
     bool firstLine = true;
     while(ytStreamClient.connected()) {
-        while(!ytStreamClient.available() && millis()-start < 10000) { delay(10); }
+        while(!ytStreamClient.available() && millis()-start < 30000) { delay(10); }
         if(!ytStreamClient.available()) break;
         char c = ytStreamClient.read();
         if(c=='\r') continue;
@@ -590,6 +590,7 @@ static void ytUpdateStream() {
         static uint32_t lastSt = 0;
         if(millis()-lastSt > 2000) {
             lastSt = millis();
+            Serial.printf("[STREAM] No data. connected=%d\n", ytStreamClient.connected());
             fRect(0,120,240,15,C_DGRAY);
             char msg[48]; snprintf(msg,48,"frames:%d bytes:%d", ytFramesDrawn, (int)ytFrameDataPos);
             dTxt(4,122,msg,C_YELLOW);
@@ -599,6 +600,7 @@ static void ytUpdateStream() {
     }
     uint8_t buf[1024];
     size_t n = ytStreamClient.read(buf, sizeof(buf));
+    Serial.printf("[STREAM] Read %d bytes\n", n);
     for(size_t i=0;i<n;i++){
         uint8_t b=buf[i];
         if(!ytInFrame){
@@ -609,10 +611,12 @@ static void ytUpdateStream() {
             if(ytFrameDataPos<sizeof(ytFrameData)) ytFrameData[ytFrameDataPos++]=b;
             if(ytFrameDataPos>100&&ytFrameData[ytFrameDataPos-2]==0xFF&&ytFrameData[ytFrameDataPos-1]==0xD9){
                 bool ok = M5Cardputer.Display.drawJpg(ytFrameData,ytFrameDataPos,0,0,240,135,0,0,1.0f);
+                Serial.printf("[STREAM] Frame #%d: %d bytes, drawJpg=%d\n", ytFramesDrawn, ytFrameDataPos, ok);
                 fRect(0,120,240,15,C_DGRAY);
                 char info[50]; snprintf(info,50,"OK:%d %dKB", ok, (int)(ytFrameDataPos/1024));
                 dTxt(4,122,info,ok?C_GREEN:C_RED);
                 ytFramesDrawn++;
+                M5Cardputer.Display.display();
                 ytInFrame=false;ytFrameDataPos=0;
             }
             // Buffer overflow protection
@@ -753,14 +757,18 @@ static void ytHandleKey(OsKey k, char ch) {
             // Step 2: Server is awake — start MJPEG stream directly
             clear(C_BLACK);
             dTxt(30,50,"Server awake!",C_GREEN);
-            dTxt(30,70,"Starting stream...",C_CYAN);
+            dTxt(30,70,"Connecting...",C_CYAN);
             M5Cardputer.Display.display();
+            Serial.println("[STREAM] Connecting to server...");
+            ytStreamClient.stop();
             ytStreamClient.setInsecure();
             ytStreamClient.setTimeout(30000);
             if(ytStreamClient.connect(ytServerIP, 443)) {
                 char req[256]; snprintf(req,256,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",ytResults[ytResultSel].id,ytServerIP);
+                Serial.printf("[STREAM] Sending: %s", req);
                 ytStreamClient.print(req);
                 ytLastStatus = ytReadHTTPStatus();
+                Serial.printf("[STREAM] HTTP status: %d\n", ytLastStatus);
                 if(ytLastStatus == 200) {
                     ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0;
                 } else if(ytLastStatus == 308 && ytRedirectURL[0]) {

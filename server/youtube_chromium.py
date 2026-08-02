@@ -373,21 +373,24 @@ def api_search():
 
 @app.route('/api/stream/<video_id>')
 def api_stream(video_id):
-    # Use extractor (cached from /streams/<id> call) — FAST
-    info = extractor.get_video_url(video_id)
-    if not info:
-        return jsonify({'error': 'Video not found'}), 404
-
-    video_url = info.get('url', '')
-    source = info.get('source', '?')
-    if not video_url:
-        return jsonify({'error': 'No video URL'}), 500
-
-    print(f"[Stream] MJPEG for {video_id}, source={source}, url_len={len(video_url)}")
-
+    # Return headers IMMEDIATELY — extraction happens inside generator
     cookie_header = extractor._cookie_header if extractor._cookie_header else ''
 
     def generate_mjpeg():
+        # Extract URL inside generator so HTTP headers are sent immediately
+        info = extractor.get_video_url(video_id)
+        if not info:
+            print(f"[Stream] No URL for {video_id}")
+            return
+
+        video_url = info.get('url', '')
+        source = info.get('source', '?')
+        if not video_url:
+            print(f"[Stream] Empty URL for {video_id}")
+            return
+
+        print(f"[Stream] MJPEG for {video_id}, source={source}, url_len={len(video_url)}")
+
         cmd = ['ffmpeg', '-re']
         headers_str = 'User-Agent: Mozilla/5.0\r\nReferer: https://www.youtube.com/\r\n'
         if cookie_header:
