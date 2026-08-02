@@ -119,7 +119,8 @@ class VideoExtractor:
             'format': 'worst[ext=mp4]/worst',
             'quiet': True,
             'no_warnings': True,
-            'js_runtimes': {'node': {}},
+            'socket_timeout': 30,
+            'retries': 2,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             },
@@ -153,42 +154,42 @@ class VideoExtractor:
             return None
 
     def _try_innertube(self, video_id):
-        headers = {
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-            'Origin': 'https://www.youtube.com',
-        }
-        if self._sapisid and self._cookie_header:
-            headers['Authorization'] = compute_sapisid_hash(self._sapisid)
-            headers['Cookie'] = self._cookie_header
-        elif self._cookie_header:
-            headers['Cookie'] = self._cookie_header
-
-        payload = {
-            'context': {'client': {'clientName': 'WEB', 'clientVersion': '2.20240801.00.00'}},
-            'videoId': video_id,
-        }
-        api_key = INNERTUBE_API_KEY
-        player_url = f'https://www.youtube.com/youtubei/v1/player?key={api_key}'
-
         try:
+            headers = {
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                'Origin': 'https://www.youtube.com',
+            }
+            if self._sapisid and self._cookie_header:
+                headers['Authorization'] = compute_sapisid_hash(self._sapisid)
+                headers['Cookie'] = self._cookie_header
+            elif self._cookie_header:
+                headers['Cookie'] = self._cookie_header
+
+            payload = {
+                'context': {'client': {'clientName': 'WEB', 'clientVersion': '2.20250101.00.00'}},
+                'videoId': video_id,
+            }
+            api_key = INNERTUBE_API_KEY
+            player_url = f'https://www.youtube.com/youtubei/v1/player?key={api_key}'
+
             data = json.dumps(payload).encode('utf-8')
             req = urllib.request.Request(player_url, data=data, headers=headers, method='POST')
             with urllib.request.urlopen(req, timeout=15) as resp:
                 body = json.loads(resp.read())
 
-            status = body.get('playabilityStatus', {})
-            if status.get('status') not in ('OK', None):
-                print(f"[Innertube] {video_id}: status={status.get('status')}")
-                return None
-
             streaming = body.get('streamingData', {})
             formats = streaming.get('formats', []) + streaming.get('adaptiveFormats', [])
 
+            # Try combined formats first (have audio+video), then any video, then any URL
             video_url = None
             for fmt in formats:
-                if fmt.get('mimeType', '').startswith('video/') and 'url' in fmt:
-                    if fmt.get('audioQuality'):
+                if fmt.get('mimeType', '').startswith('video/') and 'url' in fmt and fmt.get('audioQuality'):
+                    video_url = fmt['url']
+                    break
+            if not video_url:
+                for fmt in formats:
+                    if fmt.get('mimeType', '').startswith('video/') and 'url' in fmt:
                         video_url = fmt['url']
                         break
             if not video_url:
