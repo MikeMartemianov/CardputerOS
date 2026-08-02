@@ -1,0 +1,122 @@
+- generic [ref=e4]:
+  - generic [ref=e7]:
+    - img "Google" [ref=e10]
+    - generic [ref=e11]:
+      - generic [ref=e13]:
+        - heading "Вход" [level=1] [ref=e14]
+        - paragraph [ref=e15]: с аккаунтом Google. Этот аккаунт будет доступен другим приложениям Google в браузере.
+      - generic [ref=e18]:
+        - generic [ref=e21]:
+          - generic [ref=e26]:
+            - textbox "Телефон или адрес эл. почты" [active] [ref=e27]
+            - generic: Телефон или адрес эл. почты
+          - paragraph [ref=e28]:
+            - link "Забыли адрес электронной почты?" [ref=e29] [cursor=pointer]:
+              - /url: /signin/usernamerecovery?continue=https://www.youtube.com&dsh=S-500524837:1785676811964958&flowEntry=ServiceLogin&flowName=WebLiteSignIn&ifkv=Ac50bxu4Oxej9gUcUjTjGekIFItuPbZgg0a7_3lPAGakVz8mwNE5GhjYE1XLSPVmYa3Y--GuVYufuQ
+        - paragraph [ref=e32]:
+          - text: Работаете на чужом компьютере? Используйте режим инкогнито.
+          - link "Подробнее об использовании гостевого режима (внешняя ссылка, откроется в новом окне)" [ref=e33] [cursor=pointer]:
+            - /url: https://support.google.com/accounts?p=signin_privatebrowsing&hl=ru
+            - text: Подробнее об использовании гостевого режима
+        - generic [ref=e35]:
+          - button "Далее" [ref=e37]
+          - link "Создать аккаунт" [ref=e39] [cursor=pointer]:
+            - /url: /lifecycle/flows/signup?continue=https://www.youtube.com&dsh=S-500524837:1785676811964958&flowEntry=SignUp&flowName=GlifWebSignIn&ifkv=Ac50bxu4Oxej9gUcUjTjGekIFItuPbZgg0a7_3lPAGakVz8mwNE5GhjYE1XLSPVmYa3Y--GuVYufuQ
+  - contentinfo [ref=e40]:
+    - combobox [ref=e43] [cursor=pointer]:
+      - option "беларуская"
+      - option "български"
+      - option "кыргызча"
+      - option "қазақ тілі"
+      - option "македонски"
+      - option "монгол"
+      - option "Русский" [selected]
+      - option "српски (ћирилица)"
+      - option "Українська"
+      - option "Afrikaans"
+      - option "azərbaycan"
+      - option "bosanski"
+      - option "català"
+      - option "Čeština"
+      - option "Cymraeg"
+      - option "Dansk"
+      - option "Deutsch"
+      - option "eesti"
+      - option "English (United Kingdom)"
+      - option "English (United States)"
+      - option "Español (España)"
+      - option "Español (Latinoamérica)"
+      - option "euskara"
+      - option "Filipino"
+      - option "Français (Canada)"
+      - option "Français (France)"
+      - option "Gaeilge"
+      - option "galego"
+      - option "Hrvatski"
+      - option "Indonesia"
+      - option "isiZulu"
+      - option "íslenska"
+      - option "Italiano"
+      - option "Kiswahili"
+      - option "latviešu"
+      - option "lietuvių"
+      - option "magyar"
+      - option "Melayu"
+      - option "Nederlands"
+      - option "norsk"
+      - option "o‘zbek"
+      - option "polski"
+      - option "Português (Brasil)"
+      - option "Português (Portugal)"
+      - option "română"
+      - option "shqip"
+      - option "Slovenčina"
+      - option "slovenščina"
+      - option "srpski (latinica)"
+      - option "Suomi"
+      - option "Svenska"
+      - option "Tiếng Việt"
+      - option "Türkçe"
+      - option "Ελληνικά"
+      - option "ქართული"
+      - option "հայերեն"
+      - option "‫עברית‬‎"
+      - option "‫اردو‬‎"
+      - option "‫العربية‬‎"
+      - option "‫فارسی‬‎"
+      - option "አማርኛ"
+      - option "नेपाली"
+      - option "मराठी"
+      - option "हिन्दी"
+      - option "অসমীয়া"
+      - option "বাংলা"
+      - option "ਪੰਜਾਬੀ"
+      - option "ગુજરાતી"
+      - option "ଓଡ଼ିଆ"
+      - option "தமிழ்"
+      - option "తెలుగు"
+      - option "ಕನ್ನಡ"
+      - option "മലയാളം"
+      - option "සිංහල"
+      - option "ไทย"
+      - option "ລາວ"
+      - option "မြန်မာ"
+      - option "ខ្មែរ"
+      - option "한국어"
+      - option "中文（香港）"
+      - option "日本語"
+      - option "简体中文"
+      - option "繁體中文"
+    - list [ref=e44]:
+      - listitem [ref=e45]:
+        - link "Открыть Справочный центр Google Аккаунтов (внешняя ссылка, откроется в новом окне)" [ref=e46] [cursor=pointer]:
+          - /url: https://support.google.com/accounts?hl=ru&p=account_iph
+          - text: Справка
+      - listitem [ref=e47]:
+        - link "Политика конфиденциальности (внешняя ссылка, откроется в новом окне)" [ref=e48] [cursor=pointer]:
+          - /url: https://accounts.google.com/TOS?loc=FI&hl=ru&privacy=true
+          - text: Конфиденциальность
+      - listitem [ref=e49]:
+        - link "Условия использования Google (внешняя ссылка, откроется в новом окне)" [ref=e50] [cursor=pointer]:
+          - /url: https://accounts.google.com/TOS?loc=FI&hl=ru
+          - text: Условия

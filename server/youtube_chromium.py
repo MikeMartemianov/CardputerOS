@@ -131,23 +131,18 @@ class VideoExtractor:
             if video_id in self._cache and self._is_cache_valid(self._cache[video_id]):
                 return self._cache[video_id]
 
-        # Strategy 1: yt-dlp with cookies (most reliable — handles throttling + IP binding)
+        # Strategy 1: Playwright (Chromium solves all YouTube challenges natively)
+        result = self._try_playwright(video_id)
+        if result:
+            return self._cache_and_return(video_id, result)
+
+        # Strategy 2: yt-dlp with cookies
         result = self._try_ytdlp(video_id)
         if result:
             return self._cache_and_return(video_id, result)
 
-        # Strategy 2: YouTube Innertube API (direct, may get 403 on playback)
+        # Strategy 3: Innertube API (fallback — URLs may get 403)
         result = self._try_innertube(video_id)
-        if result:
-            return self._cache_and_return(video_id, result)
-
-        # Strategy 3: Piped API (most are dead, but worth trying)
-        result = self._try_piped(video_id)
-        if result:
-            return self._cache_and_return(video_id, result)
-
-        # Strategy 4: Playwright (last resort)
-        result = self._try_playwright(video_id)
         if result:
             return self._cache_and_return(video_id, result)
 
@@ -368,7 +363,7 @@ class VideoExtractor:
         return None
 
     # ----------------------------------------------------------
-    # Strategy 4: Playwright with cookies
+    # Strategy 1: Playwright with cookies (Chromium handles everything)
     # ----------------------------------------------------------
     def _try_playwright(self, video_id):
         try:
@@ -385,7 +380,6 @@ class VideoExtractor:
                     headless=True,
                     args=[
                         '--no-sandbox',
-                        '--disable-gpu',
                         '--disable-dev-shm-usage',
                         '--disable-setuid-sandbox',
                         '--disable-blink-features=AutomationControlled',
@@ -405,55 +399,76 @@ class VideoExtractor:
                 page = context.new_page()
                 page.add_init_script("""
                     Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                    window.chrome = { runtime: {} };
+                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+                    window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
                 """)
 
                 def on_response(response):
-                    if 'googlevideo.com/videoplayback' in response.url:
-                        video_urls.append(response.url)
+                    url = response.url
+                    if 'googlevideo.com/videoplayback' in url:
+                        video_urls.append(url)
 
                 page.on('response', on_response)
 
                 print(f"[Playwright] Loading video {video_id}...")
                 page.goto(
                     f'https://www.youtube.com/watch?v={video_id}',
-                    wait_until='domcontentloaded',
-                    timeout=25000,
+                    wait_until='networkidle',
+                    timeout=30000,
                 )
 
-                try:
-                    page.locator(
-                        'button:has-text("Accept all"), '
-                        'button:has-text("Reject all")'
-                    ).first.click(timeout=3000)
-                    time.sleep(2)
-                except Exception:
-                    pass
+                # Accept consent if present
+                for sel in ['button:has-text("Accept all")', 'button:has-text("Reject all")',
+                            'button:has-text("Принять все")', 'button:has-text("Отклонить все")']:
+                    try:
+                        page.locator(sel).first.click(timeout=2000)
+                        time.sleep(2)
+                        break
+                    except Exception:
+                        pass
 
-                time.sleep(5)
+                time.sleep(3)
 
-                try:
-                    page.locator('.ytp-large-play-button, .ytp-play-button').first.click(timeout=5000)
-                    time.sleep(5)
-                except Exception:
-                    pass
+                # Try to click play
+                for sel in ['.ytp-large-play-button', '.ytp-play-button',
+                            'button[aria-label*="Play"]', '.ytp-cued-thumbnail-overlay']:
+                    try:
+                        page.locator(sel).first.click(timeout=3000)
+                        time.sleep(2)
+                        break
+                    except Exception:
+                        pass
+
+                # Wait for video URLs to appear
+                for i in range(15):
+                    if video_urls:
+                        break
+                    time.sleep(1)
 
                 title = page.title().replace(' - YouTube', '')
                 duration = self._extract_duration(page)
 
-                print(f"[Playwright] Found {len(video_urls)} URLs")
+                print(f"[Playwright] Found {len(video_urls)} URLs, title={title[:50]}")
                 browser.close()
 
+            # Pick best URL
             video_url = None
             for url in video_urls:
                 if 'itag=18' in url:
                     video_url = url
                     break
+            if not video_url:
+                for url in video_urls:
+                    if 'mime=video' in url or 'video%2Fmp4' in url:
+                        video_url = url
+                        break
             if not video_url and video_urls:
                 video_url = video_urls[0]
 
             if video_url:
                 return {'url': video_url, 'title': title, 'duration': duration, 'source': 'playwright'}
+
+            print("[Playwright] No video URLs captured")
 
         except Exception as e:
             print(f"[Playwright] Error: {e}")
@@ -626,7 +641,7 @@ def api_scan():
         'status': 'ok',
         'version': '5.0',
         'name': 'CardputerOS YouTube Server',
-        'strategies': ['yt-dlp', 'innertube', 'piped', 'playwright'],
+        'strategies': ['playwright', 'yt-dlp', 'innertube'],
         'cookies': f'{cookies_size} bytes' if cookies_exist else 'missing',
         'sapisid': 'yes' if extractor._sapisid else 'no',
         'mjpeg_fps': MJPEG_FPS,
@@ -776,10 +791,7 @@ def api_search():
 
 @app.route('/api/stream/<video_id>')
 def api_stream(video_id):
-    # Always extract fresh URL via yt-dlp (innertube URLs get 403 from ffmpeg)
     try:
-        with extractor._lock:
-            extractor._cache.pop(video_id, None)
         info = extractor.get_video_url(video_id)
     except Exception as e:
         print(f"[Stream] Extract error: {e}")
@@ -920,7 +932,7 @@ if __name__ == '__main__':
     cookies_size = os.path.getsize(COOKIES_PATH) if cookies_exist else 0
     print(f"  Cookies: {'OK' if cookies_exist and cookies_size > 50 else 'MISSING'} ({cookies_size} bytes)")
     print(f"  SAPISID: {'YES' if extractor._sapisid else 'NO'}")
-    print(f"  Strategies: yt-dlp -> Innertube -> Piped -> Playwright")
+    print(f"  Strategies: Playwright -> Innertube")
     print(f"  Port: {port}")
     print("=" * 50)
     app.run(host='0.0.0.0', port=port, debug=False)
