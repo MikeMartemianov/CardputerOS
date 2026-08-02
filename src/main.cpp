@@ -362,7 +362,7 @@ static void ytFetchUrl(const char* path, char* buf, int bufSize) {
     }
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http;
-    http.begin(client, url); http.setTimeout(10000);
+    http.begin(client, url); http.setTimeout(45000);
     http.setUserAgent("CardputerOS/0.5");
     http.addHeader("Accept", "application/json");
     int code = http.GET();
@@ -376,7 +376,7 @@ static void ytFetchUrl(const char* path, char* buf, int bufSize) {
 static void ytFetchBinary(const char* url, uint8_t* buf, int bufSize, int* outSize) {
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http;
-    http.begin(client, url); http.setTimeout(10000);
+    http.begin(client, url); http.setTimeout(45000);
     http.setUserAgent("CardputerOS/0.5");
     int code = http.GET(); *outSize=0;
     if(code==200){
@@ -760,15 +760,18 @@ static void ytHandleKey(OsKey k, char ch) {
             dTxt(30,70,"Connecting...",C_CYAN);
             M5Cardputer.Display.display();
             Serial.println("[STREAM] Connecting to server...");
+            Serial.flush();
             ytStreamClient.stop();
             ytStreamClient.setInsecure();
             ytStreamClient.setTimeout(30000);
             if(ytStreamClient.connect(ytServerIP, 443)) {
                 char req[256]; snprintf(req,256,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",ytResults[ytResultSel].id,ytServerIP);
-                Serial.printf("[STREAM] Sending: %s", req);
+                Serial.printf("[STREAM] Sending request to %s\n", ytServerIP);
+                Serial.flush();
                 ytStreamClient.print(req);
                 ytLastStatus = ytReadHTTPStatus();
                 Serial.printf("[STREAM] HTTP status: %d\n", ytLastStatus);
+                Serial.flush();
                 if(ytLastStatus == 200) {
                     ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0;
                 } else if(ytLastStatus == 308 && ytRedirectURL[0]) {
