@@ -744,41 +744,31 @@ def api_search():
 
 @app.route('/api/stream/<video_id>')
 def api_stream(video_id):
-    info = extractor.get_video_url(video_id)
+    try:
+        info = extractor.get_video_url(video_id)
+    except Exception as e:
+        print(f"[Stream] Extract error: {e}")
+        return jsonify({'error': str(e)}), 500
     if not info:
         return jsonify({'error': 'Video not found'}), 404
 
-    video_url = info['url']
+    video_url = info.get('url', '')
+    if not video_url:
+        return jsonify({'error': 'No video URL'}), 500
+
     print(f"[Stream] Starting MJPEG for {video_id}, url_len={len(video_url)}, source={info.get('source','?')}")
 
-    # Build cookie header for ffmpeg
     cookie_header = extractor._cookie_header if extractor._cookie_header else ''
 
     def generate_mjpeg():
-        # Force yt-dlp extraction (innertube URLs get 403)
-        with extractor._lock:
-            extractor._cache.pop(video_id, None)  # Clear stale cache
-        info2 = extractor._try_ytdlp(video_id)
-        if info2 and info2.get('url'):
-            video_url = info2['url']
-            print(f"[Stream] Using yt-dlp URL for {video_id}")
-        else:
-            print(f"[Stream] yt-dlp failed, using cached URL source={info.get('source','?')}")
-
-        cmd = [
-            'ffmpeg', '-re',
-        ]
+        print(f"[Stream] ffmpeg for {video_id}, source={info.get('source','?')}")
+        cmd = ['ffmpeg', '-re']
         headers_str = 'User-Agent: Mozilla/5.0\r\nReferer: https://www.youtube.com/\r\n'
         if cookie_header:
             headers_str += f'Cookie: {cookie_header}\r\n'
         cmd += ['-headers', headers_str]
-        cmd += [
-            '-i', video_url,
-            '-f', 'mjpeg',
-            '-vf', f'scale={MJPEG_WIDTH}:{MJPEG_HEIGHT}',
-            '-r', str(MJPEG_FPS), '-q:v', str(MJPEG_QUALITY),
-            '-an', 'pipe:1',
-        ]
+        cmd += ['-i', video_url, '-f', 'mjpeg', '-vf', f'scale={MJPEG_WIDTH}:{MJPEG_HEIGHT}',
+                '-r', str(MJPEG_FPS), '-q:v', str(MJPEG_QUALITY), '-an', 'pipe:1']
         print(f"[Stream] ffmpeg cmd: {' '.join(cmd[:6])}...")
         process = None
         try:
@@ -796,7 +786,6 @@ def api_stream(video_id):
                 except Exception:
                     pass
 
-            import threading
             t = threading.Thread(target=log_stderr, daemon=True)
             t.start()
 
