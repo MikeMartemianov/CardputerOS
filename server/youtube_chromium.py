@@ -375,23 +375,28 @@ def api_search():
 
 @app.route('/api/stream/<video_id>')
 def api_stream(video_id):
-    # Return headers IMMEDIATELY — extraction happens inside generator
+    # Accept pre-extracted URL from ESP32 (avoids YouTube bot detection on server IP)
+    pre_url = request.args.get('url', '')
     cookie_header = extractor._cookie_header if extractor._cookie_header else ''
 
     def generate_mjpeg():
-        # Extract URL inside generator so HTTP headers are sent immediately
-        info = extractor.get_video_url(video_id)
-        if not info:
-            print(f"[Stream] No URL for {video_id}")
-            return
-
-        video_url = info.get('url', '')
-        source = info.get('source', '?')
-        if not video_url:
-            print(f"[Stream] Empty URL for {video_id}")
-            return
-
-        print(f"[Stream] MJPEG for {video_id}, source={source}, url_len={len(video_url)}")
+        if pre_url:
+            # ESP32 extracted the URL via Innertube API (home IP, not blocked)
+            video_url = pre_url
+            source = 'esp32-innertube'
+            print(f"[Stream] MJPEG for {video_id}, source={source} (ESP32-provided URL)")
+        else:
+            # Server-side extraction (may fail on Render due to IP blocking)
+            info = extractor.get_video_url(video_id)
+            if not info:
+                print(f"[Stream] No URL for {video_id}")
+                return
+            video_url = info.get('url', '')
+            source = info.get('source', '?')
+            if not video_url:
+                print(f"[Stream] Empty URL for {video_id}")
+                return
+            print(f"[Stream] MJPEG for {video_id}, source={source}, url_len={len(video_url)}")
 
         cmd = ['ffmpeg', '-re']
         headers_str = 'User-Agent: Mozilla/5.0\r\nReferer: https://www.youtube.com/\r\n'
