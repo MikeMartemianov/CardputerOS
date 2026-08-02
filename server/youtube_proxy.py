@@ -297,6 +297,36 @@ def api_audio(video_id):
     )
 
 
+@app.route('/api/debug/<video_id>')
+def api_debug(video_id):
+    """Debug endpoint - shows yt-dlp output"""
+    import traceback
+    try:
+        ydl_opts = {
+            'format': 'worst[ext=mp4]',
+            'quiet': False,
+            'no_warnings': False,
+            'extract_flat': False,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            },
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+            return jsonify({
+                'status': 'ok',
+                'title': info.get('title', '?'),
+                'duration': info.get('duration', 0),
+                'url': info.get('url', 'NONE')[:100],
+                'formats_count': len(info.get('formats', [])),
+            })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e),
+            'traceback': traceback.format_exc()[-500:],
+        })
+
 @app.route('/api/play', methods=['POST'])
 def api_play():
     """Start playing a video by URL"""
