@@ -396,9 +396,16 @@ def api_debug(video_id):
                 'cookies': f'{cookies_path} ({cookies_size} bytes)',
             })
     except Exception as e:
+        cp = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+        ce = os.path.exists(cp)
+        cs = os.path.getsize(cp) if ce else 0
         return jsonify({
             'status': 'error',
             'error': str(e),
+            'cookies_path': cp,
+            'cookies_exist': ce,
+            'cookies_size': cs,
+            'file': os.path.abspath(__file__),
         })
 
 
