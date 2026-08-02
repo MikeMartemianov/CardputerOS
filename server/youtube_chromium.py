@@ -641,7 +641,7 @@ def api_debug(video_id):
             'source': info.get('source', '?'),
             'title': info.get('title', '?'),
             'duration': info.get('duration', 0),
-            'url': info.get('url', '')[:120],
+            'url': info.get('url', ''),
         })
     return jsonify({
         'status': 'error',
@@ -720,10 +720,13 @@ def api_stream(video_id):
         return jsonify({'error': 'Video not found'}), 404
 
     video_url = info['url']
+    print(f"[Stream] Starting MJPEG for {video_id}, url_len={len(video_url)}")
 
     def generate_mjpeg():
         cmd = [
-            'ffmpeg', '-re', '-i', video_url,
+            'ffmpeg', '-re',
+            '-headers', f'User-Agent: Mozilla/5.0\r\n',
+            '-i', video_url,
             '-f', 'mjpeg',
             '-vf', f'scale={MJPEG_WIDTH}:{MJPEG_HEIGHT}',
             '-r', str(MJPEG_FPS), '-q:v', str(MJPEG_QUALITY),
@@ -733,26 +736,58 @@ def api_stream(video_id):
         try:
             process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, bufsize=65536,
+                stderr=subprocess.PIPE, bufsize=65536,
             )
+
+            # Read stderr in background thread for logging
+            def log_stderr():
+                try:
+                    err = process.stderr.read(4096)
+                    if err:
+                        print(f"[Stream] ffmpeg stderr: {err.decode('utf-8', errors='replace')[:500]}")
+                except Exception:
+                    pass
+
+            import threading
+            t = threading.Thread(target=log_stderr, daemon=True)
+            t.start()
+
+            # Persistent buffer for JPEG frames across chunks
+            buf = b''
             while True:
                 chunk = process.stdout.read(65536)
                 if not chunk:
                     break
-                pos = 0
-                while pos < len(chunk):
-                    soi = chunk.find(b'\xff\xd8', pos)
-                    if soi == -1:
+                buf += chunk
+
+                # Extract all complete JPEG frames from buffer
+                while True:
+                    soi = buf.find(b'\xff\xd8')
+                    if soi < 0:
+                        # No SOI — keep last byte in case it's partial FF
+                        buf = buf[-1:] if buf.endswith(b'\xff') else b''
                         break
-                    eoi = chunk.find(b'\xff\xd9', soi)
-                    if eoi == -1:
-                        break
-                    frame = chunk[soi:eoi + 2]
-                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'
-                           + frame + b'\r\n')
-                    pos = eoi + 2
+
+                    # Discard anything before SOI
+                    if soi > 0:
+                        buf = buf[soi:]
+
+                    # Find EOI after SOI
+                    eoi = buf.find(b'\xff\xd9', 2)
+                    if eoi < 0:
+                        break  # Incomplete frame, wait for more data
+
+                    frame = buf[:eoi + 2]
+                    buf = buf[eoi + 2:]
+
+                    if len(frame) > 100:  # Skip tiny/invalid frames
+                        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'
+                               + frame + b'\r\n')
+
+            print(f"[Stream] ffmpeg ended for {video_id}")
+
         except Exception as e:
-            print(f"MJPEG error: {e}")
+            print(f"[Stream] MJPEG error: {e}")
         finally:
             if process:
                 process.terminate()
@@ -760,7 +795,7 @@ def api_stream(video_id):
     return Response(
         generate_mjpeg(),
         mimetype='multipart/x-mixed-replace; boundary=frame',
-        headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive'},
+        headers={'Cache-Control': 'no-cache'},
     )
 
 
