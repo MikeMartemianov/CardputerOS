@@ -23,14 +23,8 @@ MJPEG_HEIGHT = 135
 # ============================================================
 # Find Chromium executable
 # ============================================================
-def find_chromium():
-    for path in ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']:
-        if os.path.exists(path):
-            return path
-    return 'chromium'
-
-CHROMIUM_PATH = find_chromium()
-print(f"[OK] Chromium: {CHROMIUM_PATH}")
+CHROMIUM_PATH = None  # Let Playwright use its own bundled Chromium
+print("[OK] Chromium: Playwright bundled")
 
 # ============================================================
 # Video extraction with Playwright + system Chromium
@@ -56,7 +50,6 @@ class VideoExtractor:
             with sync_playwright() as p:
                 browser = p.chromium.launch(
                     headless=True,
-                    executable_path=CHROMIUM_PATH,
                     args=[
                         '--no-sandbox',
                         '--disable-gpu',
@@ -163,7 +156,7 @@ def api_scan():
     return jsonify({
         'status': 'ok', 'version': '3.0',
         'name': 'CardputerOS YouTube Server (Chromium)',
-        'chromium': CHROMIUM_PATH,
+        'chromium': 'Playwright bundled',
         'mjpeg_fps': MJPEG_FPS,
         'mjpeg_resolution': f'{MJPEG_WIDTH}x{MJPEG_HEIGHT}',
     })
