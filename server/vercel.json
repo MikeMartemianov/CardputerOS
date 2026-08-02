@@ -1,0 +1,19 @@
+{
+  "builds": [
+    {
+      "src": "youtube_proxy.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "youtube_proxy.py"
+    }
+  ],
+  "functions": {
+    "youtube_proxy.py": {
+      "maxDuration": 300
+    }
+  }
+}
