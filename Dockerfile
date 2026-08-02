@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-# Install ffmpeg
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# Install ffmpeg and nodejs (needed for yt-dlp JS runtime)
+RUN apt-get update && apt-get install -y ffmpeg nodejs && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY server/requirements.txt /app/requirements.txt
