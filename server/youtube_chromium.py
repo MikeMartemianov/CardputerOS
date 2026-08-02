@@ -155,8 +155,10 @@ class VideoExtractor:
 
     def _cache_and_return(self, video_id, result):
         result['time'] = time.time()
-        with self._lock:
-            self._cache[video_id] = result
+        # Don't cache innertube results — they get 403 from ffmpeg
+        if 'innertube' not in result.get('source', ''):
+            with self._lock:
+                self._cache[video_id] = result
         return result
 
     # ----------------------------------------------------------
@@ -653,6 +655,9 @@ def api_debug(video_id):
 @app.route('/api/ffmpeg_test/<video_id>')
 def api_ffmpeg_test(video_id):
     """Test ffmpeg on a video URL — returns stderr for debugging"""
+    # Force clear cache and try yt-dlp
+    with extractor._lock:
+        extractor._cache.pop(video_id, None)
     info = extractor.get_video_url(video_id)
     if not info:
         return jsonify({'error': 'No video URL'}), 404
@@ -744,7 +749,10 @@ def api_search():
 
 @app.route('/api/stream/<video_id>')
 def api_stream(video_id):
+    # Always extract fresh URL via yt-dlp (innertube URLs get 403 from ffmpeg)
     try:
+        with extractor._lock:
+            extractor._cache.pop(video_id, None)
         info = extractor.get_video_url(video_id)
     except Exception as e:
         print(f"[Stream] Extract error: {e}")
