@@ -54,7 +54,6 @@ class VideoCache:
                 'quiet': True,
                 'no_warnings': True,
                 'extract_flat': False,
-                'js_runtimes': ['nodejs'],
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 },
@@ -84,6 +83,8 @@ class VideoCache:
                 return self._cache[video_id]
         except Exception as e:
             print(f"Error getting stream URL for {video_id}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def search(self, query):

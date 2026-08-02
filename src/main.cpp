@@ -30,7 +30,7 @@ static int8_t settingsRow=0, brightness=255;
 // YouTube Cloudflare Worker proxy — set your worker URL here
 static char ytWorkerUrl[128]=""; // Set Cloudflare Worker URL here if deployed
 // Companion server for video streaming  
-static char ytServerIP[64]="192.168.0.82";static uint16_t ytServerPort=8080;
+static char ytServerIP[64]="cardputeros.onrender.com";
 // Storyboard "video" player
 struct YtStoryboard{char url[200];int frameW;int frameH;int total;int durPerFrame;int perRow;int perCol;};
 static YtStoryboard ytSb={};static int ytSbCurFrame=0;static uint32_t ytSbLastFrame=0;
@@ -49,7 +49,7 @@ static char ytPlayThumbUrl[200]="";static char ytPlayVideoUrl[500]="";
 static uint8_t* ytThumbBuf=nullptr;static size_t ytThumbSize=0;
 static bool ytLoadingThumb=false;
 // MJPEG streaming from companion server
-static bool ytStreaming=false;static WiFiClient ytStreamClient;static HTTPClient ytHttp;
+static bool ytStreaming=false;static WiFiClientSecure ytStreamClient;static HTTPClient ytHttp;
 static bool ytInFrame=false;static size_t ytFrameDataPos=0;
 static uint8_t ytFrameData[240*135*2];
 
@@ -721,14 +721,15 @@ static void ytHandleKey(OsKey k, char ch) {
                 char msg[40]; snprintf(msg,40,"Attempt %d/10",attempt+1);
                 dTxt(30,60,msg,C_LGRAY);
                 M5Cardputer.Display.display();
-                // Simple GET to /api/scan to wake server
-                WiFiClient probeClient;
+                // Simple GET to /api/scan to wake Render
+                WiFiClientSecure probe; probe.setInsecure();
                 HTTPClient http;
-                String wakeUrl = String("http://") + ytServerIP + ":" + String(ytServerPort) + "/api/scan";
-                http.begin(probeClient, wakeUrl);
+                String wakeUrl = String("https://") + ytServerIP + "/api/scan";
+                http.begin(probe, wakeUrl);
                 http.setTimeout(30000);
                 int code = http.GET();
                 http.end();
+                probe.stop();
                 if(code == 200) { awake = true; }
                 else {
                     fRect(30,75,200,20,C_BLACK);
@@ -752,8 +753,9 @@ static void ytHandleKey(OsKey k, char ch) {
             dTxt(30,50,"Server awake!",C_GREEN);
             dTxt(30,70,"Starting stream...",C_CYAN);
             M5Cardputer.Display.display();
+            ytStreamClient.setInsecure();
             ytStreamClient.setTimeout(30000);
-            if(ytStreamClient.connect(ytServerIP, ytServerPort)) {
+            if(ytStreamClient.connect(ytServerIP, 443)) {
                 char req[256]; snprintf(req,256,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",ytResults[ytResultSel].id,ytServerIP);
                 ytStreamClient.print(req);
                 ytLastStatus = ytReadHTTPStatus();
