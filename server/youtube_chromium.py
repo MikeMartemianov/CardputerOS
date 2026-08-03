@@ -150,18 +150,17 @@ class VideoExtractor:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             },
         }
-        # Impersonate Chrome TLS fingerprint — bypasses YouTube bot detection
-        # on datacenter IPs (Render). Requires yt-dlp[curl-cffi].
+        # NO cookies: YouTube binds cookies to the IP they were created on.
+        # Cookies exported from a home PC mismatch the Render datacenter IP
+        # and TRIGGER the "Sign in to confirm you're not a bot" block.
+        # Chrome TLS impersonation alone is sufficient.
         try:
             from yt_dlp.networking.impersonate import ImpersonateTarget
             ydl_opts['impersonate'] = ImpersonateTarget.from_str('chrome')
-            print("[yt-dlp] Using Chrome impersonation")
+            print("[yt-dlp] Using Chrome impersonation (no cookies)")
         except Exception as e:
             print(f"[yt-dlp] Impersonation unavailable: {e}")
             self._last_error = f"impersonate: {e}"
-        if cookies_exist and cookies_size > 50:
-            ydl_opts['cookies'] = COOKIES_PATH
-            print(f"[yt-dlp] Using cookies ({cookies_size} bytes)")
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
