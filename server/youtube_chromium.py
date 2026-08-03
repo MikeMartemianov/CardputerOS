@@ -91,6 +91,7 @@ class VideoExtractor:
     def __init__(self):
         self._cache = {}
         self._lock = threading.Lock()
+        self._last_error = ''
         self._cookies = load_netscape_cookies(COOKIES_PATH)
         self._cookie_header = cookies_to_header(self._cookies)
         self._sapisid = None
@@ -157,6 +158,7 @@ class VideoExtractor:
             print("[yt-dlp] Using Chrome impersonation")
         except Exception as e:
             print(f"[yt-dlp] Impersonation unavailable: {e}")
+            self._last_error = f"impersonate: {e}"
         if cookies_exist and cookies_size > 50:
             ydl_opts['cookies'] = COOKIES_PATH
             print(f"[yt-dlp] Using cookies ({cookies_size} bytes)")
@@ -183,6 +185,7 @@ class VideoExtractor:
                 }
         except Exception as e:
             print(f"[yt-dlp] Error: {e}")
+            self._last_error = f"yt-dlp: {e}"
             return None
 
     def _try_innertube(self, video_id):
@@ -548,7 +551,8 @@ def api_debug(video_id):
             'duration': info.get('duration', 0),
             'url': info.get('url', ''),
         })
-    return jsonify({'status': 'error', 'error': 'All extraction strategies failed.'})
+    return jsonify({'status': 'error', 'error': 'All extraction strategies failed.',
+                    'last_error': extractor._last_error})
 
 
 @app.route('/api/search')
