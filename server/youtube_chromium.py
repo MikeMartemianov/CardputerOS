@@ -145,19 +145,24 @@ class VideoExtractor:
             'no_warnings': True,
             'socket_timeout': 30,
             'retries': 2,
-            'extractor_args': {'youtube': {'player_client': ['tv_embedded']}},
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                    'po_token': ['android+bgutil'],
+                }
+            },
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                'User-Agent': 'com.google.android.youtube/20.10.33 (Linux; U; Android 14) gzip',
             },
         }
+        # Chrome TLS impersonation — bypasses YouTube bot detection on
+        # datacenter IPs (Render). Combined with android client + PO token
+        # from the public bgutil provider (works on any IP).
         # NO cookies: YouTube binds cookies to the IP they were created on.
-        # Cookies exported from a home PC mismatch the Render datacenter IP
-        # and TRIGGER the "Sign in to confirm you're not a bot" block.
-        # Chrome TLS impersonation alone is sufficient.
         try:
             from yt_dlp.networking.impersonate import ImpersonateTarget
             ydl_opts['impersonate'] = ImpersonateTarget.from_str('chrome')
-            print("[yt-dlp] Using Chrome impersonation (no cookies)")
+            print("[yt-dlp] Using Chrome impersonation + android + PO token")
         except Exception as e:
             print(f"[yt-dlp] Impersonation unavailable: {e}")
             self._last_error = f"impersonate: {e}"
