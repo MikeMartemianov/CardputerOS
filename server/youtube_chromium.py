@@ -505,6 +505,30 @@ def api_scan():
     })
 
 
+@app.route('/api/proxy_test')
+def api_proxy_test():
+    """Test: can Render download a googlevideo URL extracted elsewhere?"""
+    url = request.args.get('url', '')
+    if not url:
+        return jsonify({'error': 'no url'})
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0',
+            'Referer': 'https://www.youtube.com/',
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read(4096)
+            return jsonify({
+                'status': 'ok' if len(data) else 'empty',
+                'http': resp.status,
+                'content_type': resp.headers.get('Content-Type', ''),
+                'bytes': len(data),
+            })
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)[:200]})
+
+
 @app.route('/api/curl_test/<video_id>')
 def api_curl_test(video_id):
     """Test: raw curl_cffi impersonation to YouTube player API from this IP"""
@@ -816,6 +840,95 @@ def api_audio(video_id):
 
     return Response(generate_audio(), mimetype='audio/mpeg',
                     headers={'Cache-Control': 'no-cache', 'Transfer-Encoding': 'chunked'})
+
+
+# ============================================================
+# Remote command channel (AI -> server -> Cardputer -> server -> AI)
+# ============================================================
+
+# Command queue state: {id, cmd, status: pending|executing|done, result}
+_cmd_state = {'id': 0, 'cmd': '', 'status': 'idle', 'result': '', 'result_time': 0}
+_cmd_lock = threading.Lock()
+
+
+@app.route('/api/cmd/send', methods=['POST', 'GET'])
+def api_cmd_send():
+    """Send a command to the Cardputer. Returns a command ID."""
+    cmd = request.args.get('cmd', '')
+    if not cmd:
+        data = request.get_json(silent=True) or {}
+        cmd = data.get('cmd', '')
+    if not cmd:
+        return jsonify({'status': 'error', 'error': 'no cmd param'})
+    with _cmd_lock:
+        _cmd_state['id'] += 1
+        _cmd_state['cmd'] = cmd[:500]
+        _cmd_state['status'] = 'pending'
+        _cmd_state['result'] = ''
+        _cmd_state['result_time'] = 0
+        cid = _cmd_state['id']
+    print(f"[CMD] Sent #{cid}: {cmd}")
+    return jsonify({'status': 'ok', 'id': cid, 'cmd': cmd})
+
+
+@app.route('/api/cmd/poll')
+def api_cmd_poll():
+    """Cardputer polls for pending commands. Returns the command or idle."""
+    with _cmd_lock:
+        if _cmd_state['status'] == 'pending':
+            _cmd_state['status'] = 'executing'
+            return jsonify({'status': 'ok', 'id': _cmd_state['id'], 'cmd': _cmd_state['cmd']})
+        return jsonify({'status': 'idle'})
+
+
+@app.route('/api/cmd/result', methods=['POST', 'GET'])
+def api_cmd_result():
+    """Cardputer posts execution result (POST) or AI reads it (GET)."""
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        cid = data.get('id', 0)
+        result = str(data.get('result', ''))[:2000]
+        with _cmd_lock:
+            if cid == _cmd_state['id']:
+                _cmd_state['status'] = 'done'
+                _cmd_state['result'] = result
+                _cmd_state['result_time'] = time.time()
+                print(f"[CMD] Result #{cid}: {result[:100]}")
+                return jsonify({'status': 'ok'})
+            return jsonify({'status': 'error', 'error': f'id mismatch: got {cid}, expected {_cmd_state["id"]}'})
+    # GET: read latest result
+    with _cmd_lock:
+        return jsonify({
+            'status': _cmd_state['status'],
+            'id': _cmd_state['id'],
+            'cmd': _cmd_state['cmd'],
+            'result': _cmd_state['result'],
+            'result_time': _cmd_state['result_time'],
+        })
+
+
+@app.route('/api/proxy_test')
+def api_proxy_test():
+    """Test: can Render download a googlevideo URL extracted elsewhere?"""
+    url = request.args.get('url', '')
+    if not url:
+        return jsonify({'error': 'no url'})
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0',
+            'Referer': 'https://www.youtube.com/',
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read(4096)
+            return jsonify({
+                'status': 'ok' if len(data) else 'empty',
+                'http': resp.status,
+                'content_type': resp.headers.get('Content-Type', ''),
+                'bytes': len(data),
+            })
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)[:200]})
 
 
 if __name__ == '__main__':

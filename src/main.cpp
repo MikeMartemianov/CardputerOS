@@ -1276,6 +1276,120 @@ void setup(){
 }
 
 // ============================================================
+// REMOTE COMMAND CHANNEL (server -> Cardputer)
+// ============================================================
+static uint32_t cmdLastPoll=0;
+static int cmdCurrentId=0;
+static char cmdLastResult[512]="";
+
+// Execute a command received from the server. Returns result string.
+static const char* cmdExecute(const char* cmd) {
+    static char result[512];
+    result[0]=0;
+    if(strncmp(cmd,"ping",4)==0){
+        snprintf(result,512,"pong heap=%d rssi=%d app=%d",ESP.getFreeHeap(),WiFi.RSSI(),currentApp);
+    }
+    else if(strncmp(cmd,"status",6)==0){
+        snprintf(result,512,"heap=%d rssi=%d app=%d ip=%s",ESP.getFreeHeap(),WiFi.RSSI(),currentApp,WiFi.localIP().toString().c_str());
+    }
+    else if(strncmp(cmd,"key ",4)==0){
+        const char* k=cmd+4;
+        if(strncmp(k,"ENTER",5)==0){if(currentApp==APP_YOUTUBE)ytHandleKey(K_ENTER,0);else if(currentApp==APP_TERMINAL)termHandleKey(K_ENTER,0);else if(currentApp==APP_SETTINGS)settingsHandleKey(K_ENTER);}
+        else if(strncmp(k,"ESC",3)==0){if(currentApp!=APP_DESKTOP){currentApp=APP_DESKTOP;drawDesktop();}}
+        else if(strncmp(k,"UP",2)==0){if(currentApp==APP_YOUTUBE)ytHandleKey(K_UP,0);else if(currentApp==APP_TERMINAL)termHandleKey(K_UP,0);}
+        else if(strncmp(k,"DOWN",4)==0){if(currentApp==APP_YOUTUBE)ytHandleKey(K_DOWN,0);else if(currentApp==APP_TERMINAL)termHandleKey(K_DOWN,0);}
+        else if(strncmp(k,"LEFT",4)==0){mouseInput(K_LEFT,true);}
+        else if(strncmp(k,"RIGHT",5)==0){mouseInput(K_RIGHT,true);}
+        snprintf(result,512,"key:%s ok app=%d",k,currentApp);
+    }
+    else if(strncmp(cmd,"text ",5)==0){
+        clear(C_BLACK);
+        dTxt(4,20,cmd+5,C_WHITE);
+        M5Cardputer.Display.display();
+        snprintf(result,512,"text shown");
+    }
+    else if(strncmp(cmd,"ytopen",6)==0){
+        currentApp=APP_YOUTUBE;
+        drawDesktop();
+        snprintf(result,512,"youtube opened");
+    }
+    else if(strncmp(cmd,"reboot",6)==0){
+        ESP.restart();
+    }
+    else {
+        snprintf(result,512,"unknown cmd: %.100s",cmd);
+    }
+    return result;
+}
+
+// Poll server for pending commands (called from loop, ~3s interval)
+static void cmdPoll() {
+    // Skip polling during MJPEG streaming (network is busy)
+    if(ytStreaming) return;
+    if(millis()-cmdLastPoll < 3000) return;
+    cmdLastPoll=millis();
+    if(WiFi.status()!=WL_CONNECTED) return;
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(10000);
+    if(!client.connect(ytServerIP,443)) return;
+
+    client.printf("GET /api/cmd/poll HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",ytServerIP);
+    uint32_t t0=millis();
+    // Read response — find JSON body
+    char body[512];int bl=0;bool inBody=false;int crlf=0;
+    while(client.connected()&&millis()-t0<8000&&bl<500){
+        if(client.available()){
+            char c=client.read();
+            if(!inBody){
+                if(c=='\n'){crlf++;if(crlf>=2)inBody=true;}
+                else if(c!='\r')crlf=0;
+            } else {
+                body[bl++]=c;
+            }
+        } else delay(5);
+    }
+    body[bl]=0;
+    client.stop();
+
+    // Parse JSON: {"status":"ok","id":N,"cmd":"..."}
+    char* st=strstr(body,"\"status\":");
+    if(!st||strstr(body,"\"idle\"")) return;
+    char* idp=strstr(body,"\"id\":");
+    char* cmdp=strstr(body,"\"cmd\":");
+    if(!cmdp) return;
+    cmdp+=7;
+    char* cend=strchr(cmdp,'"');
+    if(!cend) return;
+    int clen=cend-cmdp;
+    if(clen<=0||clen>256) return;
+    char cmd[256];memcpy(cmd,cmdp,clen);cmd[clen]=0;
+    if(idp){cmdCurrentId=atoi(idp+5);}
+
+    Serial.printf("[CMD] Executing: %s\n",cmd);
+    const char* res=cmdExecute(cmd);
+
+    // POST result back
+    WiFiClientSecure rc;
+    rc.setInsecure();
+    rc.setTimeout(10000);
+    if(rc.connect(ytServerIP,443)){
+        char body2[700];
+        snprintf(body2,700,"{\"id\":%d,\"result\":\"%s\"}",cmdCurrentId,res);
+        int len=strlen(body2);
+        rc.printf("POST /api/cmd/result HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",ytServerIP,len,body2);
+        uint32_t t1=millis();
+        while(rc.connected()&&millis()-t1<5000){
+            if(rc.available()) rc.read();
+            else delay(5);
+        }
+        rc.stop();
+    }
+    Serial.printf("[CMD] Result sent: %s\n",res);
+}
+
+// ============================================================
 // LOOP
 // ============================================================
 static uint32_t lastDraw=0;
@@ -1438,6 +1552,9 @@ void loop(){
 
     // MJPEG MUST be last — nothing should draw over it
     ytUpdateStream();
+    
+    // Remote command polling — check server for commands every ~3s
+    cmdPoll();
     
     mouseDraw(&M5Cardputer.Display);
     delay(5);
