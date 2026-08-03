@@ -228,7 +228,13 @@ class VideoExtractor:
             print(f"[curl_cffi] Import failed: {e}")
             return None
 
-        # Try multiple mobile clients — these work without cookies/PO tokens
+        # Build cookies dict from Netscape cookies.txt
+        cookies = {}
+        for c in self._cookies:
+            if 'youtube' in c['domain'] or 'google' in c['domain']:
+                cookies[c['name']] = c['value']
+
+        # Try multiple mobile clients — these work without PO tokens
         clients = [
             {'clientName': 'ANDROID', 'clientVersion': '20.10.33',
              'androidSdkVersion': 33, 'osName': 'Android', 'osVersion': '14'},
@@ -256,6 +262,7 @@ class VideoExtractor:
                     json=payload,
                     impersonate='chrome',
                     headers=headers,
+                    cookies=cookies,
                     timeout=20,
                 )
                 if resp.status_code != 200:
@@ -263,6 +270,11 @@ class VideoExtractor:
                     continue
 
                 body = resp.json()
+                ps = body.get('playabilityStatus', {})
+                if ps.get('status') == 'LOGIN_REQUIRED':
+                    print(f"[curl_cffi] {client_ctx.get('clientName')} LOGIN_REQUIRED — cookies not enough")
+                    continue
+
                 streaming = body.get('streamingData', {})
                 formats = streaming.get('formats', []) + streaming.get('adaptiveFormats', [])
 
@@ -439,9 +451,15 @@ def api_diag(video_id):
                 headers = {'Origin': 'https://www.youtube.com'}
                 if ctx['clientName'] == 'ANDROID':
                     headers['User-Agent'] = 'com.google.android.youtube/20.10.33 (Linux; U; Android 14) gzip'
+                # Send cookies to prove authenticated session
+                diag_cookies = {}
+                for c in extractor._cookies:
+                    if 'youtube' in c['domain'] or 'google' in c['domain']:
+                        diag_cookies[c['name']] = c['value']
                 resp = cffi_requests.post(
                     'https://www.youtube.com/youtubei/v1/player?key=' + INNERTUBE_API_KEY,
-                    json=payload, impersonate='chrome', headers=headers, timeout=20)
+                    json=payload, impersonate='chrome', headers=headers,
+                    cookies=diag_cookies, timeout=20)
                 body = resp.json()
                 if 'error' in body:
                     results.append({
