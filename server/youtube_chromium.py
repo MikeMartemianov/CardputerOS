@@ -471,10 +471,14 @@ def api_scan():
     pot_ok = False
     pot_err = ''
     try:
-        from yt_dlp_plugins.extractor.getpot import get_pot_provider
-        providers = get_pot_provider()
-        pot_ok = len(providers) > 0
-        pot_err = str([p._PROVIDER_NAME for p in providers])
+        import yt_dlp
+        import yt_dlp_plugins.extractor.getpot  # noqa: F401 - registers provider
+        from yt_dlp.extractor.youtube._base import get_pot_providers  # noqa
+        # Try to actually fetch a PO token for android client
+        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+            providers = get_pot_providers(ydl, 'android', None)
+            pot_ok = len(providers) > 0
+            pot_err = str([type(p).__name__ for p in providers]) if pot_ok else 'no providers'
     except Exception as e:
         pot_err = str(e)
     
