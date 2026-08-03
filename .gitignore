@@ -5,3 +5,4 @@
 *.pyc
 __pycache__/
 serial_log.txt
+deploy_hook.txt
