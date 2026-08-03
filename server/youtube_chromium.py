@@ -467,12 +467,22 @@ def api_scan():
                 imp_err = 'target not available (curl_cffi handler missing?)'
     except Exception as e:
         imp_err = str(e)
+    # Check PO token provider (bgutil)
+    pot_ok = False
+    pot_err = ''
+    try:
+        from yt_dlp_plugins.extractor.getpot import get_pot_provider
+        providers = get_pot_provider()
+        pot_ok = len(providers) > 0
+        pot_err = str([p._PROVIDER_NAME for p in providers])
+    except Exception as e:
+        pot_err = str(e)
     
     return jsonify({
         'status': 'ok',
-        'version': '6.3',
+        'version': '6.4',
         'name': 'CardputerOS YouTube Server',
-        'strategies': ['yt-dlp+impersonate'],
+        'strategies': ['yt-dlp+impersonate+pot'],
         'cookies': f'{cookies_size} bytes' if cookies_exist else 'missing',
         'sapisid': 'yes' if extractor._sapisid else 'no',
         'ytdlp': f'{ytdlp_ver} ok={ytdlp_ok}',
@@ -480,6 +490,7 @@ def api_scan():
         'ejs': ejs_ok,
         'curl_cffi': f'{curl_ver} ok={curl_ok}',
         'impersonate': f'ok={imp_ok}' + (f' err={imp_err}' if imp_err else ''),
+        'po_token': f'ok={pot_ok} providers={pot_err}' if pot_ok else f'err={pot_err}',
         'mjpeg_fps': MJPEG_FPS,
     })
 
