@@ -442,12 +442,31 @@ def api_scan():
     try:
         from curl_cffi import requests
         curl_ok = True
-    except Exception:
+        try:
+            import curl_cffi
+            curl_ver = getattr(curl_cffi, '__version__', '?')
+        except Exception:
+            curl_ver = '?'
+    except Exception as e:
         curl_ok = False
+        curl_ver = str(e)
+    # Check yt-dlp impersonation support
+    imp_ok = False
+    imp_err = ''
+    try:
+        import yt_dlp
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        t = ImpersonateTarget.from_str('chrome')
+        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+            imp_ok = ydl._impersonate_target_available(t)
+            if not imp_ok:
+                imp_err = 'target not available (curl_cffi handler missing?)'
+    except Exception as e:
+        imp_err = str(e)
     
     return jsonify({
         'status': 'ok',
-        'version': '6.2',
+        'version': '6.3',
         'name': 'CardputerOS YouTube Server',
         'strategies': ['yt-dlp+impersonate'],
         'cookies': f'{cookies_size} bytes' if cookies_exist else 'missing',
@@ -455,7 +474,8 @@ def api_scan():
         'ytdlp': f'{ytdlp_ver} ok={ytdlp_ok}',
         'node': f'{node_ver} ok={node_ok}',
         'ejs': ejs_ok,
-        'curl_cffi': curl_ok,
+        'curl_cffi': f'{curl_ver} ok={curl_ok}',
+        'impersonate': f'ok={imp_ok}' + (f' err={imp_err}' if imp_err else ''),
         'mjpeg_fps': MJPEG_FPS,
     })
 
