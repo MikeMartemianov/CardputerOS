@@ -613,6 +613,33 @@ def api_diag(video_id):
     return jsonify({'video_id': video_id, 'results': results})
 
 
+@app.route('/api/pot_test')
+def api_pot_test():
+    """Test: can we fetch a PO token from the bgutil provider?"""
+    results = {}
+    try:
+        import yt_dlp
+        from yt_dlp.extractor.youtube import YoutubeIE
+        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+            # Find the getpot provider registry
+            import yt_dlp_plugins.extractor.getpot  # registers provider
+            # bgutil provider fetches from api.bgp.gg - test direct
+            import urllib.request
+            try:
+                req = urllib.request.Request(
+                    'https://api.bgp.gg/yt-dlp-pots/app/pot',
+                    data=b'', method='GET',
+                    headers={'User-Agent': 'curl/8.0'})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    body = resp.read().decode('utf-8', errors='replace')
+                    results['bgutil_direct'] = f'HTTP {resp.status}: {body[:200]}'
+            except Exception as e:
+                results['bgutil_direct'] = f'ERROR: {e}'
+    except Exception as e:
+        results['import_error'] = str(e)[:200]
+    return jsonify(results)
+
+
 @app.route('/api/debug/<video_id>')
 @app.route('/streams/<video_id>')
 def api_debug(video_id):
