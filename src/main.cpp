@@ -417,80 +417,209 @@ static void urlEncode(const char* in, char* out, int outSize) {
     out[j] = 0;
 }
 
+// Find value of a JSON string key, skipping whitespace: "key" : "value"
+// (YouTube now returns pretty-printed JSON with "url": "..." — space after colon!)
+// Returns pointer to first char of the value, or NULL if not found.
+static char* jsonStrValue(const char* haystack, const char* key) {
+    char needle[40];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char* p = strstr(haystack, needle);
+    if(!p) return NULL;
+    p += strlen(needle);
+    while(*p==' '||*p=='\t'||*p=='\n'||*p=='\r') p++;
+    if(*p!=':') return NULL;
+    p++;
+    while(*p==' '||*p=='\t'||*p=='\n'||*p=='\r') p++;
+    if(*p!='"') return NULL;
+    return (char*)(p+1);
+}
+
+// Test: reach YouTube Innertube, return HTTP code (for diagnostics)
+static int ytTestInnertube(const char* videoId) {
+    static WiFiClientSecure c;
+    c.stop(); c.setInsecure(); c.setTimeout(15000);
+    if(!c.connect("www.youtube.com", 443)) return -2;  // connect failed
+    char body[350];
+    snprintf(body, 350, "{\"context\":{\"client\":{\"clientName\":\"ANDROID\",\"clientVersion\":\"20.10.33\",\"androidSdkVersion\":33,\"osName\":\"Android\",\"osVersion\":\"14\"}},\"videoId\":\"%s\"}", videoId);
+    c.printf("POST /youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8 HTTP/1.1\r\n"
+             "Host: www.youtube.com\r\n"
+             "User-Agent: Mozilla/5.0\r\n"
+             "Content-Type: application/json\r\n"
+             "Origin: https://www.youtube.com\r\n"
+             "Content-Length: %d\r\n"
+             "Connection: close\r\n\r\n"
+             "%s", strlen(body), body);
+    // Read status line
+    char line[64]; int lp = 0;
+    uint32_t t0 = millis();
+    while(c.connected() && millis() - t0 < 15000) {
+        if(c.available()) {
+            char ch = c.read();
+            if(ch == '\n') { line[lp] = 0; break; }
+            if(lp < 60 && ch != '\r') line[lp++] = ch;
+        } else delay(5);
+    }
+    c.stop();
+    if(line[0] == 0) return -3;  // no response
+    int code = 0;
+    char* sp = strchr(line, ' ');
+    if(sp) code = atoi(sp + 1);
+    return code;
+}
+
+// Diagnostic version: returns stage code
+// 0=ok, 1=connect fail, 2=send fail, 3=no data, 4=no url, 5=response<100
+static int gLastRespLen = 0;  // total response bytes from last diag call
+static int gLastDumpOff = 0;  // offset of diag dump inside response
+static int gHasStreaming = 0, gHasFormats = 0, gHasAdaptive = 0, gHasUrl = 0;
+static int ytExtractVideoUrlDiag(const char* videoId, char* urlBuf, int urlBufSize) {
+    urlBuf[0] = 0;
+    static WiFiClientSecure c;
+    c.stop();
+    c.setInsecure();
+    c.setTimeout(10000);
+
+    if(!c.connect("www.youtube.com", 443)) return 1;
+
+    char body[350];
+    snprintf(body, 350, "{\"context\":{\"client\":{\"clientName\":\"ANDROID\",\"clientVersion\":\"20.10.33\",\"androidSdkVersion\":33,\"osName\":\"Android\",\"osVersion\":\"14\"}},\"videoId\":\"%s\"}", videoId);
+    int blen = strlen(body);
+    size_t sent = c.printf("POST /youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8 HTTP/1.1\r\n"
+             "Host: www.youtube.com\r\n"
+             "User-Agent: Mozilla/5.0\r\n"
+             "Content-Type: application/json\r\n"
+             "Origin: https://www.youtube.com\r\n"
+             "Content-Length: %d\r\n"
+             "Connection: close\r\n\r\n"
+             "%s", blen, body);
+    if(sent < 50) return 2;
+
+    static char respBuf[24576];
+    int respLen = 0;
+    uint32_t startTime = millis();
+    while(millis() - startTime < 10000) {
+        if(c.available()) {
+            int space = (int)sizeof(respBuf) - respLen - 1;
+            if(space <= 0) break;
+            int toRead = (space > 256) ? 256 : space;
+            int n = c.read((uint8_t*)respBuf + respLen, toRead);
+            if(n > 0) {
+                respLen += n;
+                respBuf[respLen] = 0;
+                const char* fStart = strstr(respBuf, "\"formats\"");
+                if(fStart && jsonStrValue(fStart, "url")) break;
+            }
+        } else {
+            if(!c.connected()) break;
+            delay(2);
+        }
+    }
+    c.stop();
+    respBuf[respLen] = 0;
+    gLastRespLen = respLen;
+    gHasStreaming = (strstr(respBuf, "\"streamingData\"") != NULL);
+    gHasFormats   = (strstr(respBuf, "\"formats\"") != NULL);
+    gHasAdaptive  = (strstr(respBuf, "\"adaptiveFormats\"") != NULL);
+    gHasUrl       = (jsonStrValue(respBuf, "url") != NULL);
+    Serial.printf("[InnertubeDiag] respLen=%d streaming=%d formats=%d adaptive=%d url=%d\n",
+                  respLen, gHasStreaming, gHasFormats, gHasAdaptive, gHasUrl);
+
+    if(respLen < 100) return 3 + (respLen > 0 ? 1 : 0);  // 3=empty, 4=small
+
+    const char* formatsStart = strstr(respBuf, "\"formats\"");
+    if(formatsStart) {
+        char* urlPtr = jsonStrValue(formatsStart, "url");
+        if(urlPtr) {
+            int i = 0;
+            while(*urlPtr && *urlPtr != '"' && i < urlBufSize - 1) urlBuf[i++] = *urlPtr++;
+            urlBuf[i] = 0;
+        }
+    }
+    if(urlBuf[0]) return 0;
+    // Diagnostics: dump 200 bytes around "playabilityStatus" (or offset 1000
+    // if not found) so we can see what YouTube answered (OK / LOGIN_REQUIRED / error).
+    const char* ps = strstr(respBuf, "\"playabilityStatus\"");
+    const char* dumpStart;
+    if(ps) dumpStart = ps;
+    else if(respLen > 1000) dumpStart = respBuf + 1000;
+    else dumpStart = respBuf;
+    gLastDumpOff = (int)(dumpStart - respBuf);
+    int avail = respLen - gLastDumpOff;
+    int cp = (avail < 200) ? avail : 200;
+    memcpy(urlBuf, dumpStart, cp);
+    urlBuf[cp] = 0;
+    Serial.printf("[InnertubeDiag] no formats+url, dump at offset %d:\n", gLastDumpOff);
+    for(int i = 0; i < cp && i < 48; i++) Serial.printf("%02x ", (uint8_t)dumpStart[i]);
+    Serial.println();
+    return 5;
+}
+
 // POST JSON to YouTube Innertube API — extract video URL
 // Returns true on success, URL in urlBuf
 static bool ytExtractVideoUrl(const char* videoId, char* urlBuf, int urlBufSize) {
     urlBuf[0] = 0;
     Serial.printf("[Innertube] Extracting URL for %s\n", videoId);
 
-    char apiUrl[256];
-    snprintf(apiUrl, 256, "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8");
+    static WiFiClientSecure c;
+    c.stop();
+    c.setInsecure();
+    c.setTimeout(15000);
 
-    // Build POST body — ANDROID client gives DIRECT playable URLs
-    // (no signatureCipher, no n-function, no PO token needed)
-    char body[350];
-    snprintf(body, 350, "{\"context\":{\"client\":{\"clientName\":\"ANDROID\",\"clientVersion\":\"20.10.33\",\"androidSdkVersion\":33,\"osName\":\"Android\",\"osVersion\":\"14\"}},\"videoId\":\"%s\"}", videoId);
-
-    static WiFiClientSecure ytInnertubeClient;
-    static HTTPClient ytInnertubeHttp;
-    
-    ytInnertubeClient.stop();
-    ytInnertubeClient.setInsecure();
-    ytInnertubeClient.setTimeout(20000);
-
-    ytInnertubeHttp.end();
-    ytInnertubeHttp.begin(ytInnertubeClient, apiUrl);
-    ytInnertubeHttp.setTimeout(20000);
-    ytInnertubeHttp.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-    ytInnertubeHttp.addHeader("Content-Type", "application/json");
-    ytInnertubeHttp.addHeader("Origin", "https://www.youtube.com");
-
-    int code = ytInnertubeHttp.POST((uint8_t*)body, strlen(body));
-    Serial.printf("[Innertube] HTTP %d\n", code);
-
-    if(code != 200) {
-        ytInnertubeHttp.end();
+    Serial.println("[Innertube] Connecting to youtube.com...");
+    if(!c.connect("www.youtube.com", 443)) {
+        Serial.println("[Innertube] Connect FAILED");
         return false;
     }
 
-    static char respBuf[10240];
+    // Manual HTTP POST request
+    char body[350];
+    snprintf(body, 350, "{\"context\":{\"client\":{\"clientName\":\"ANDROID\",\"clientVersion\":\"20.10.33\",\"androidSdkVersion\":33,\"osName\":\"Android\",\"osVersion\":\"14\"}},\"videoId\":\"%s\"}", videoId);
+    int blen = strlen(body);
+    c.printf("POST /youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8 HTTP/1.1\r\n"
+             "Host: www.youtube.com\r\n"
+             "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
+             "Content-Type: application/json\r\n"
+             "Origin: https://www.youtube.com\r\n"
+             "Content-Length: %d\r\n"
+             "Connection: close\r\n\r\n"
+             "%s", blen, body);
+    Serial.println("[Innertube] POST sent");
+
+    // Read response headers + first 24KB of body.
+    // Read in small chunks (256B) to avoid mbedTLS crashes on big reads.
+    static char respBuf[24576];
     int respLen = 0;
-    WiFiClient* stream = ytInnertubeHttp.getStreamPtr();
-    if(!stream) { ytInnertubeHttp.end(); return false; }
-
     uint32_t startTime = millis();
-    while(stream->connected() && millis() - startTime < 15000) {
-        int avail = stream->available();
-        if(avail > 0) {
-            int space = sizeof(respBuf) - respLen - 1;
+    while(millis() - startTime < 12000) {
+        if(c.available()) {
+            int space = (int)sizeof(respBuf) - respLen - 1;
             if(space <= 0) break;
-            int toRead = (avail < space) ? avail : space;
-            int n = stream->read((uint8_t*)(respBuf + respLen), toRead);
-            if(n > 0) respLen += n;
-            respBuf[respLen] = 0;
-            // Early termination: URL is at byte ~4800 in "formats" — stop once found
-            const char* fStart = strstr(respBuf, "\"formats\"");
-            if(fStart && strstr(fStart, "\"url\":\"")) break;
+            int toRead = (space > 256) ? 256 : space;
+            int n = c.read((uint8_t*)respBuf + respLen, toRead);
+            if(n > 0) {
+                respLen += n;
+                respBuf[respLen] = 0;
+                // Check if we have formats + url yet
+                const char* fStart = strstr(respBuf, "\"formats\"");
+                if(fStart && jsonStrValue(fStart, "url")) break;
+            }
         } else {
-            delay(10);
+            if(!c.connected()) break;
+            delay(2);
         }
+        if((millis() - startTime) % 500 < 10) yield();
     }
+    c.stop();
     respBuf[respLen] = 0;
-    ytInnertubeHttp.end();
-
     Serial.printf("[Innertube] Response %d bytes\n", respLen);
 
     if(respLen < 100) return false;
 
     // Extract URL from streamingData.formats[0].url
-    // jsonFind searches for the first "url" key — might match videoDetails or other
-    // We need to find it inside "formats" array
-    // Strategy: find "formats" first, then find "url" after it
     const char* formatsStart = strstr(respBuf, "\"formats\"");
     if(formatsStart) {
-        char* urlPtr = strstr(formatsStart, "\"url\":\"");
+        char* urlPtr = jsonStrValue(formatsStart, "url");
         if(urlPtr) {
-            urlPtr += 7; // skip "url":"
             int i = 0;
             while(*urlPtr && *urlPtr != '"' && i < urlBufSize - 1) {
                 urlBuf[i++] = *urlPtr++;
@@ -503,20 +632,21 @@ static bool ytExtractVideoUrl(const char* videoId, char* urlBuf, int urlBufSize)
     if(!urlBuf[0]) {
         const char* adaptStart = strstr(respBuf, "\"adaptiveFormats\"");
         if(adaptStart) {
-            // Find first video format with url
             const char* scan = adaptStart;
             while(scan) {
-                const char* vidStart = strstr(scan, "\"mimeType\":\"video/");
+                const char* vidStart = strstr(scan, "\"mimeType\"");
                 if(!vidStart) break;
-                const char* urlPtr = strstr(vidStart, "\"url\":\"");
-                if(urlPtr && urlPtr - vidStart < 2000) {
-                    urlPtr += 7;
-                    int i = 0;
-                    while(*urlPtr && *urlPtr != '"' && i < urlBufSize - 1) {
-                        urlBuf[i++] = *urlPtr++;
+                const char* mtVal = jsonStrValue(vidStart, "mimeType");
+                if(mtVal && strncmp(mtVal, "video/", 6) == 0) {
+                    char* urlPtr = jsonStrValue(vidStart, "url");
+                    if(urlPtr && urlPtr - vidStart < 2000) {
+                        int i = 0;
+                        while(*urlPtr && *urlPtr != '"' && i < urlBufSize - 1) {
+                            urlBuf[i++] = *urlPtr++;
+                        }
+                        urlBuf[i] = 0;
+                        break;
                     }
-                    urlBuf[i] = 0;
-                    break;
                 }
                 scan = vidStart + 10;
             }
@@ -983,6 +1113,202 @@ static void drawYouTube(){
     }
 }
 
+// === YouTube Play Video (full relay flow) ===
+// wake server -> extract URL via Innertube (home IP) -> relay raw video
+// to Render /api/pipe -> display MJPEG from /api/stream_pipe
+static void ytPlayVideo(const char* videoId) {
+    ytScreen=YTS_STREAMING;
+    // Step 1: Wake up server + pre-cache yt-dlp URL via /streams endpoint
+    bool awake = false;
+    for(int attempt=0; attempt<10 && !awake; attempt++) {
+        clear(C_BLACK);
+        dTxt(30,20,"YouTube Stream",C_RED);
+        dTxt(30,45,"Waking server...",C_CYAN);
+        char msg[40]; snprintf(msg,40,"Attempt %d/10",attempt+1);
+        dTxt(30,60,msg,C_LGRAY);
+        M5Cardputer.Display.display();
+        // Call /streams/VIDEO_ID to both wake server AND cache yt-dlp URL
+        WiFiClientSecure probe; probe.setInsecure();
+        HTTPClient http;
+        char wakeUrl[256]; snprintf(wakeUrl,256,"https://%s/streams/%s",ytServerIP,videoId);
+        http.begin(probe, wakeUrl);
+        http.setTimeout(30000);
+        int code = http.GET();
+        http.end();
+        probe.stop();
+        if(code == 200) { awake = true; }
+        else {
+            fRect(30,75,200,20,C_BLACK);
+            static char wakeErr[40]; snprintf(wakeErr,40,"Status: %d, retrying...",code);
+            dTxt(30,75,wakeErr,C_YELLOW);
+            M5Cardputer.Display.display();
+            delay(5000);
+        }
+    }
+    if(!awake) {
+        clear(C_BLACK);
+        dTxt(30,50,"Server not reachable",C_RED);
+        dTxt(30,70,"Check your internet",C_LGRAY);
+        M5Cardputer.Display.display();
+        delay(3000);
+        ytScreen=YTS_PLAYER; drawYouTube();
+        return;
+    }
+    // Step 2: Extract video URL via Innertube ANDROID API from HOME IP
+    // (Render datacenter IP is blocked by YouTube - LOGIN_REQUIRED)
+    clear(C_BLACK);
+    dTxt(30,20,"YouTube Stream",C_RED);
+    dTxt(30,45,"Extracting URL...",C_CYAN);
+    M5Cardputer.Display.display();
+    bool urlOk = ytExtractVideoUrl(videoId, ytExtractedUrl, sizeof(ytExtractedUrl));
+    if(!urlOk || !ytExtractedUrl[0]) {
+        ytExtractedUrl[0] = 0;
+        clear(C_BLACK);
+        dTxt(30,50,"URL extraction failed",C_YELLOW);
+        dTxt(30,70,"Trying server...",C_LGRAY);
+        M5Cardputer.Display.display();
+    }
+    // Step 3: Relay video from googlevideo (home IP) -> Render pipe
+    clear(C_BLACK);
+    dTxt(30,50,"Starting relay...",C_CYAN);
+    M5Cardputer.Display.display();
+    Serial.println("[STREAM] Opening video relay...");
+    Serial.flush();
+
+    // 3a: Open connection to googlevideo (our IP matches URL ip=)
+    bool relayStarted = false;
+    WiFiClientSecure videoClient;
+    if(urlOk && ytExtractedUrl[0]) {
+        // Parse host from URL
+        char host[128]=""; char path[1600]="";
+        const char* hp = strstr(ytExtractedUrl, "://");
+        if(hp) {
+            hp += 3;
+            const char* slash = strchr(hp, '/');
+            if(slash) {
+                int hl = slash - hp; if(hl>120) hl=120;
+                memcpy(host, hp, hl); host[hl]=0;
+                strncpy(path, slash, 1590);
+            }
+        }
+        if(host[0] && path[0]) {
+            videoClient.setInsecure();
+            videoClient.setTimeout(30000);
+            Serial.printf("[STREAM] Connecting to video host: %s\n", host);
+            if(videoClient.connect(host, 443)) {
+                snprintf(ytStreamReq,2300,"GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0\r\nReferer: https://www.youtube.com/\r\nConnection: close\r\n\r\n", path, host);
+                videoClient.print(ytStreamReq);
+                relayStarted = true;
+            } else {
+                Serial.println("[STREAM] Video host connect FAILED");
+            }
+        }
+    }
+    if(!relayStarted) {
+        // Fallback: old direct server stream (server-side extraction)
+        Serial.println("[STREAM] Relay failed, fallback to server stream");
+        ytStreamClient.stop();
+        ytStreamClient.setInsecure();
+        ytStreamClient.setTimeout(60000);
+        if(ytStreamClient.connect(ytServerIP, 443)) {
+            snprintf(ytStreamReq,2300,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\n\r\n",
+                     videoId, ytServerIP);
+            ytStreamClient.print(ytStreamReq);
+            ytLastStatus = ytReadHTTPStatus();
+            if(ytLastStatus == 200) {
+                ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0; ytLastDataTime=millis(); ytReconnectCount=0;
+                clear(C_BLACK);
+                fRect(0,0,240,10,C_RED); dTxt(4,1,"LIVE",C_WHITE);
+                if(ytFramesDrawn==0) { dTxt(30,60,"Loading video...",C_CYAN); }
+                M5Cardputer.Display.display();
+            }
+        }
+        // Continue to normal loop
+    } else {
+        // 3b: Connect to Render pipe endpoint
+        WiFiClientSecure pipeClient;
+        pipeClient.setInsecure();
+        pipeClient.setTimeout(30000);
+        Serial.println("[STREAM] Connecting to Render pipe...");
+        if(pipeClient.connect(ytServerIP, 443)) {
+            // POST /api/pipe/VIDEO_ID with streaming body
+            snprintf(ytStreamReq,2300,"POST /api/pipe/%s HTTP/1.1\r\nHost: %s\r\nContent-Type: video/mp4\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                     videoId, ytServerIP);
+            pipeClient.print(ytStreamReq);
+            Serial.println("[STREAM] Pipe connected, relaying video...");
+
+            // 3c: Read video response headers, then relay chunks
+            uint8_t vbuf[1024];
+            uint32_t vstart = millis();
+            bool headersDone = false; int crlfCount = 0;
+            while(videoClient.connected() && millis()-vstart < 30000) {
+                if(videoClient.available()) {
+                    int n = videoClient.read(vbuf, sizeof(vbuf));
+                    if(n > 0) {
+                        if(!headersDone) {
+                            // Scan for \r\n\r\n in the chunk
+                            for(int i=0;i<n;i++){
+                                if(vbuf[i]=='\n'){crlfCount++; if(crlfCount>=2){headersDone=true; break;}}
+                                else if(vbuf[i]!='\r') crlfCount=0;
+                            }
+                            if(headersDone) {
+                                // Find body start in this chunk
+                                int bodyStart = 0;
+                                for(int i=0;i<n;i++){
+                                    if(vbuf[i]=='\n'){crlfCount++; if(crlfCount>=2){bodyStart=i+1; break;}}
+                                    else if(vbuf[i]!='\r') crlfCount=0;
+                                }
+                                if(bodyStart < n) {
+                                    pipeClient.printf("%X\r\n", n-bodyStart);
+                                    pipeClient.write(vbuf+bodyStart, n-bodyStart);
+                                    pipeClient.print("\r\n");
+                                }
+                            }
+                        } else {
+                            // Relay raw chunk with chunked framing
+                            pipeClient.printf("%X\r\n", n);
+                            pipeClient.write(vbuf, n);
+                            pipeClient.print("\r\n");
+                        }
+                    }
+                } else {
+                    delay(5);
+                }
+            }
+            pipeClient.print("0\r\n\r\n");
+            pipeClient.stop();
+            Serial.println("[STREAM] Relay finished");
+        } else {
+            Serial.println("[STREAM] Pipe connect FAILED");
+        }
+        videoClient.stop();
+        // 3d: Now stream MJPEG back from /api/stream_pipe
+        ytStreamClient.stop();
+        ytStreamClient.setInsecure();
+        ytStreamClient.setTimeout(60000);
+        if(ytStreamClient.connect(ytServerIP, 443)) {
+            snprintf(ytStreamReq,2300,"GET /api/stream_pipe HTTP/1.1\r\nHost: %s\r\n\r\n", ytServerIP);
+            ytStreamClient.print(ytStreamReq);
+            ytLastStatus = ytReadHTTPStatus();
+            Serial.printf("[STREAM] Pipe stream status: %d\n", ytLastStatus);
+            if(ytLastStatus == 200) {
+                ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0; ytLastDataTime=millis(); ytReconnectCount=0;
+                clear(C_BLACK);
+                fRect(0,0,240,10,C_RED); dTxt(4,1,"LIVE",C_WHITE);
+                if(ytFramesDrawn==0) { dTxt(30,60,"Loading video...",C_CYAN); }
+                M5Cardputer.Display.display();
+            }
+        }
+    }
+    if(!ytStreaming) {
+        clear(C_BLACK);
+        dTxt(30,50,"Stream failed",C_RED);
+        M5Cardputer.Display.display();
+        delay(2000);
+        ytScreen=YTS_PLAYER; drawYouTube();
+    }
+}
+
 // === YouTube Key Handler ===
 static void ytHandleKey(OsKey k, char ch) {
     if(ytScreen==YTS_INPUT) {
@@ -1009,196 +1335,7 @@ static void ytHandleKey(OsKey k, char ch) {
     else if(ytScreen==YTS_PLAYER) {
         if(k==K_ESC) { ytStopStream(); ytFreeThumb(); ytScreen=YTS_RESULTS; drawYouTube(); }
         else if(k==K_ENTER && !ytStreaming && ytResults[ytResultSel].id[0]) {
-            ytScreen=YTS_STREAMING;
-            // Step 1: Wake up server + pre-cache yt-dlp URL via /streams endpoint
-            bool awake = false;
-            for(int attempt=0; attempt<10 && !awake; attempt++) {
-                clear(C_BLACK);
-                dTxt(30,20,"YouTube Stream",C_RED);
-                dTxt(30,45,"Waking server...",C_CYAN);
-                char msg[40]; snprintf(msg,40,"Attempt %d/10",attempt+1);
-                dTxt(30,60,msg,C_LGRAY);
-                M5Cardputer.Display.display();
-                // Call /streams/VIDEO_ID to both wake server AND cache yt-dlp URL
-                WiFiClientSecure probe; probe.setInsecure();
-                HTTPClient http;
-                char wakeUrl[256]; snprintf(wakeUrl,256,"https://%s/streams/%s",ytServerIP,ytResults[ytResultSel].id);
-                http.begin(probe, wakeUrl);
-                http.setTimeout(30000);
-                int code = http.GET();
-                http.end();
-                probe.stop();
-                if(code == 200) { awake = true; }
-                else {
-                    fRect(30,75,200,20,C_BLACK);
-                    static char wakeErr[40]; snprintf(wakeErr,40,"Status: %d, retrying...",code);
-                    dTxt(30,75,wakeErr,C_YELLOW);
-                    M5Cardputer.Display.display();
-                    delay(5000);
-                }
-            }
-            if(!awake) {
-                clear(C_BLACK);
-                dTxt(30,50,"Server not reachable",C_RED);
-                dTxt(30,70,"Check your internet",C_LGRAY);
-                M5Cardputer.Display.display();
-                delay(3000);
-                ytScreen=YTS_PLAYER; drawYouTube();
-                return;
-            }
-            // Step 2: Extract video URL via Innertube ANDROID API from HOME IP
-            // (Render datacenter IP is blocked by YouTube - LOGIN_REQUIRED)
-            clear(C_BLACK);
-            dTxt(30,20,"YouTube Stream",C_RED);
-            dTxt(30,45,"Extracting URL...",C_CYAN);
-            M5Cardputer.Display.display();
-            bool urlOk = ytExtractVideoUrl(ytResults[ytResultSel].id, ytExtractedUrl, sizeof(ytExtractedUrl));
-            if(!urlOk || !ytExtractedUrl[0]) {
-                ytExtractedUrl[0] = 0;
-                clear(C_BLACK);
-                dTxt(30,50,"URL extraction failed",C_YELLOW);
-                dTxt(30,70,"Trying server...",C_LGRAY);
-                M5Cardputer.Display.display();
-            }
-            // Step 3: Relay video from googlevideo (home IP) -> Render pipe
-            clear(C_BLACK);
-            dTxt(30,50,"Starting relay...",C_CYAN);
-            M5Cardputer.Display.display();
-            Serial.println("[STREAM] Opening video relay...");
-            Serial.flush();
-
-            // 3a: Open connection to googlevideo (our IP matches URL ip=)
-            bool relayStarted = false;
-            WiFiClientSecure videoClient;
-            if(urlOk && ytExtractedUrl[0]) {
-                // Parse host from URL
-                char host[128]=""; char path[1600]="";
-                const char* hp = strstr(ytExtractedUrl, "://");
-                if(hp) {
-                    hp += 3;
-                    const char* slash = strchr(hp, '/');
-                    if(slash) {
-                        int hl = slash - hp; if(hl>120) hl=120;
-                        memcpy(host, hp, hl); host[hl]=0;
-                        strncpy(path, slash, 1590);
-                    }
-                }
-                if(host[0] && path[0]) {
-                    videoClient.setInsecure();
-                    videoClient.setTimeout(30000);
-                    Serial.printf("[STREAM] Connecting to video host: %s\n", host);
-                    if(videoClient.connect(host, 443)) {
-                        snprintf(ytStreamReq,2300,"GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0\r\nReferer: https://www.youtube.com/\r\nConnection: close\r\n\r\n", path, host);
-                        videoClient.print(ytStreamReq);
-                        relayStarted = true;
-                    } else {
-                        Serial.println("[STREAM] Video host connect FAILED");
-                    }
-                }
-            }
-            if(!relayStarted) {
-                // Fallback: old direct server stream (server-side extraction)
-                Serial.println("[STREAM] Relay failed, fallback to server stream");
-                ytStreamClient.stop();
-                ytStreamClient.setInsecure();
-                ytStreamClient.setTimeout(60000);
-                if(ytStreamClient.connect(ytServerIP, 443)) {
-                    snprintf(ytStreamReq,2300,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\n\r\n",
-                             ytResults[ytResultSel].id, ytServerIP);
-                    ytStreamClient.print(ytStreamReq);
-                    ytLastStatus = ytReadHTTPStatus();
-                    if(ytLastStatus == 200) {
-                        ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0; ytLastDataTime=millis(); ytReconnectCount=0;
-                        clear(C_BLACK);
-                        fRect(0,0,240,10,C_RED); dTxt(4,1,"LIVE",C_WHITE);
-                        if(ytFramesDrawn==0) { dTxt(30,60,"Loading video...",C_CYAN); }
-                        M5Cardputer.Display.display();
-                    }
-                }
-                // Continue to normal loop
-            } else {
-                // 3b: Connect to Render pipe endpoint
-                WiFiClientSecure pipeClient;
-                pipeClient.setInsecure();
-                pipeClient.setTimeout(30000);
-                Serial.println("[STREAM] Connecting to Render pipe...");
-                if(pipeClient.connect(ytServerIP, 443)) {
-                    // POST /api/pipe/VIDEO_ID with streaming body
-                    snprintf(ytStreamReq,2300,"POST /api/pipe/%s HTTP/1.1\r\nHost: %s\r\nContent-Type: video/mp4\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
-                             ytResults[ytResultSel].id, ytServerIP);
-                    pipeClient.print(ytStreamReq);
-                    Serial.println("[STREAM] Pipe connected, relaying video...");
-
-                    // 3c: Read video response headers, then relay chunks
-                    uint8_t vbuf[1024];
-                    uint32_t vstart = millis();
-                    bool headersDone = false; int crlfCount = 0;
-                    while(videoClient.connected() && millis()-vstart < 30000) {
-                        if(videoClient.available()) {
-                            int n = videoClient.read(vbuf, sizeof(vbuf));
-                            if(n > 0) {
-                                if(!headersDone) {
-                                    // Scan for \r\n\r\n in the chunk
-                                    for(int i=0;i<n;i++){
-                                        if(vbuf[i]=='\n'){crlfCount++; if(crlfCount>=2){headersDone=true; break;}}
-                                        else if(vbuf[i]!='\r') crlfCount=0;
-                                    }
-                                    if(headersDone) {
-                                        // Find body start in this chunk
-                                        int bodyStart = 0;
-                                        for(int i=0;i<n;i++){
-                                            if(vbuf[i]=='\n'){crlfCount++; if(crlfCount>=2){bodyStart=i+1; break;}}
-                                            else if(vbuf[i]!='\r') crlfCount=0;
-                                        }
-                                        if(bodyStart < n) {
-                                            pipeClient.printf("%X\r\n", n-bodyStart);
-                                            pipeClient.write(vbuf+bodyStart, n-bodyStart);
-                                            pipeClient.print("\r\n");
-                                        }
-                                    }
-                                } else {
-                                    // Relay raw chunk with chunked framing
-                                    pipeClient.printf("%X\r\n", n);
-                                    pipeClient.write(vbuf, n);
-                                    pipeClient.print("\r\n");
-                                }
-                            }
-                        } else {
-                            delay(5);
-                        }
-                    }
-                    pipeClient.print("0\r\n\r\n");
-                    pipeClient.stop();
-                    Serial.println("[STREAM] Relay finished");
-                } else {
-                    Serial.println("[STREAM] Pipe connect FAILED");
-                }
-                videoClient.stop();
-                // 3d: Now stream MJPEG back from /api/stream_pipe
-                ytStreamClient.stop();
-                ytStreamClient.setInsecure();
-                ytStreamClient.setTimeout(60000);
-                if(ytStreamClient.connect(ytServerIP, 443)) {
-                    snprintf(ytStreamReq,2300,"GET /api/stream_pipe HTTP/1.1\r\nHost: %s\r\n\r\n", ytServerIP);
-                    ytStreamClient.print(ytStreamReq);
-                    ytLastStatus = ytReadHTTPStatus();
-                    Serial.printf("[STREAM] Pipe stream status: %d\n", ytLastStatus);
-                    if(ytLastStatus == 200) {
-                        ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0; ytLastDataTime=millis(); ytReconnectCount=0;
-                        clear(C_BLACK);
-                        fRect(0,0,240,10,C_RED); dTxt(4,1,"LIVE",C_WHITE);
-                        if(ytFramesDrawn==0) { dTxt(30,60,"Loading video...",C_CYAN); }
-                        M5Cardputer.Display.display();
-                    }
-                }
-            }
-            if(!ytStreaming) {
-                clear(C_BLACK);
-                dTxt(30,50,"Stream failed",C_RED);
-                M5Cardputer.Display.display();
-                delay(2000);
-                ytScreen=YTS_PLAYER; drawYouTube();
-            }
+            ytPlayVideo(ytResults[ytResultSel].id);
         }
     }
     else if(ytScreen==YTS_STREAMING) {
@@ -1304,6 +1441,8 @@ static void bootScreen(){
 // ============================================================
 // SETUP
 // ============================================================
+static void cmdPollTask(void* param);  // forward declaration
+
 void setup(){
     Serial.begin(115200);
     Serial.println("\n=== CardputerOS v0.3 ===");
@@ -1334,14 +1473,14 @@ void setup(){
     currentApp=APP_DESKTOP;drawDesktop();
     mouseSetPos(120,67);mouseSetVis(true);
     Serial.println("Ready!");
+
+    // Start remote command polling in dedicated FreeRTOS task (16KB stack)
+    xTaskCreate(cmdPollTask, "cmdPoll", 16384, NULL, 1, NULL);
 }
 
 // ============================================================
 // REMOTE COMMAND CHANNEL (server -> Cardputer)
 // ============================================================
-static uint32_t cmdLastPoll=0;
-static int cmdCurrentId=0;
-static char cmdLastResult[512]="";
 
 // Execute a command received from the server. Returns result string.
 static const char* cmdExecute(const char* cmd) {
@@ -1369,10 +1508,51 @@ static const char* cmdExecute(const char* cmd) {
         M5Cardputer.Display.display();
         snprintf(result,512,"text shown");
     }
+    else if(strncmp(cmd,"extract ",8)==0){
+        // Full extraction test with diagnostics.
+        // On failure (diag!=0): return hex dump of first 150 response bytes
+        // so we can see exactly what YouTube answered to the ESP32.
+        char buf[2048];
+        uint32_t t0 = millis();
+        int diag = ytExtractVideoUrlDiag(cmd+8, buf, sizeof(buf));
+        uint32_t elapsedMs = (millis() - t0);
+        int blen = strlen(buf);
+        if(diag != 0 && blen > 0) {
+            int maxHex = (blen < 200) ? blen : 200;
+            int pos = snprintf(result,512,"diag=%d total=%d s=%d f=%d a=%d u=%d off=%d len=%d time=%lums hex=",diag,gLastRespLen,gHasStreaming,gHasFormats,gHasAdaptive,gHasUrl,gLastDumpOff,blen,elapsedMs);
+            for(int i = 0; i < maxHex && pos < 500; i++) {
+                pos += snprintf(result+pos, 512-pos, "%02x", (uint8_t)buf[i]);
+            }
+        } else {
+            snprintf(result,512,"diag=%d total=%d len=%d time=%lums url=%.200s",diag,gLastRespLen,blen,elapsedMs,buf);
+        }
+    }
+    else if(strncmp(cmd,"testyt",6)==0){
+        // Test: can ESP32 reach YouTube Innertube API? Return HTTP code
+        char buf[64];
+        int httpCode = ytTestInnertube("dQw4w9WgXcQ");
+        snprintf(result,512,"http=%d",httpCode);
+    }
     else if(strncmp(cmd,"ytopen",6)==0){
         currentApp=APP_YOUTUBE;
         drawDesktop();
         snprintf(result,512,"youtube opened");
+    }
+    else if(strncmp(cmd,"ytplay",6)==0){
+        // Full relay stream test: play video by ID remotely (cmd: ytplay <videoId>)
+        if(cmd[6]==' ' && cmd[7]) {
+            char vid[12]; int vi=0;
+            for(; cmd[7+vi] && cmd[7+vi]!=' ' && cmd[7+vi]!='\n' && vi<11; vi++) vid[vi]=cmd[7+vi];
+            vid[vi]=0;
+            currentApp=APP_YOUTUBE;
+            ytScreen=YTS_PLAYER;
+            strncpy(ytResults[0].id, vid, 11); ytResults[0].id[11]=0;
+            ytResultSel=0; ytResultCount=1;
+            ytPlayVideo(vid);
+            snprintf(result,512,"ytplay %s done streaming=%d",vid,ytStreaming);
+        } else {
+            snprintf(result,512,"usage: ytplay <videoId>");
+        }
     }
     else if(strncmp(cmd,"reboot",6)==0){
         ESP.restart();
@@ -1383,71 +1563,79 @@ static const char* cmdExecute(const char* cmd) {
     return result;
 }
 
-// Poll server for pending commands (called from loop, ~3s interval)
-static void cmdPoll() {
-    // Skip polling during MJPEG streaming (network is busy)
-    if(ytStreaming) return;
-    if(millis()-cmdLastPoll < 3000) return;
-    cmdLastPoll=millis();
-    if(WiFi.status()!=WL_CONNECTED) return;
+// ============================================================
+// REMOTE COMMAND CHANNEL — runs in dedicated FreeRTOS task
+// (16KB stack, so heavy commands can't crash the main loop)
+// ============================================================
+static uint32_t cmdLastPoll=0;
+static int cmdCurrentId=0;
+static char cmdLastResult[512]="";
 
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(10000);
-    if(!client.connect(ytServerIP,443)) return;
+static void cmdPollTask(void* param) {
+    while(true) {
+        // Skip polling during MJPEG streaming (network is busy)
+        if(!ytStreaming && WiFi.status()==WL_CONNECTED) {
+            WiFiClientSecure client;
+            client.setInsecure();
+            client.setTimeout(8000);
+            if(client.connect(ytServerIP,443)) {
+                client.printf("GET /api/cmd/poll HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",ytServerIP);
+                uint32_t t0=millis();
+                char body[512];int bl=0;bool inBody=false;int crlf=0;
+                while(client.connected()&&millis()-t0<8000&&bl<500){
+                    if(client.available()){
+                        char c=client.read();
+                        if(!inBody){
+                            if(c=='\n'){crlf++;if(crlf>=2)inBody=true;}
+                            else if(c!='\r')crlf=0;
+                        } else {
+                            body[bl++]=c;
+                        }
+                    } else delay(5);
+                }
+                body[bl]=0;
+                client.stop();
 
-    client.printf("GET /api/cmd/poll HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",ytServerIP);
-    uint32_t t0=millis();
-    // Read response — find JSON body
-    char body[512];int bl=0;bool inBody=false;int crlf=0;
-    while(client.connected()&&millis()-t0<8000&&bl<500){
-        if(client.available()){
-            char c=client.read();
-            if(!inBody){
-                if(c=='\n'){crlf++;if(crlf>=2)inBody=true;}
-                else if(c!='\r')crlf=0;
-            } else {
-                body[bl++]=c;
+                // Parse JSON: {"status":"ok","id":N,"cmd":"..."}
+                if(body[0] && !strstr(body,"\"idle\"")){
+                    char* cmdp=strstr(body,"\"cmd\":");
+                    char* idp=strstr(body,"\"id\":");
+                    if(cmdp){
+                        cmdp+=7;
+                        char* cend=strchr(cmdp,'"');
+                        if(cend){
+                            int clen=cend-cmdp;
+                            if(clen>0&&clen<256){
+                                char cmd[256];memcpy(cmd,cmdp,clen);cmd[clen]=0;
+                                if(idp){cmdCurrentId=atoi(idp+5);}
+                                Serial.printf("[CMD] Executing: %s\n",cmd);
+                                const char* res=cmdExecute(cmd);
+
+                                // POST result back
+                                WiFiClientSecure rc;
+                                rc.setInsecure();
+                                rc.setTimeout(8000);
+                                if(rc.connect(ytServerIP,443)){
+                                    char body2[700];
+                                    snprintf(body2,700,"{\"id\":%d,\"result\":\"%s\"}",cmdCurrentId,res);
+                                    int len=strlen(body2);
+                                    rc.printf("POST /api/cmd/result HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",ytServerIP,len,body2);
+                                    uint32_t t1=millis();
+                                    while(rc.connected()&&millis()-t1<5000){
+                                        if(rc.available()) rc.read();
+                                        else delay(5);
+                                    }
+                                    rc.stop();
+                                }
+                                Serial.printf("[CMD] Result sent: %s\n",res);
+                            }
+                        }
+                    }
+                }
             }
-        } else delay(5);
-    }
-    body[bl]=0;
-    client.stop();
-
-    // Parse JSON: {"status":"ok","id":N,"cmd":"..."}
-    char* st=strstr(body,"\"status\":");
-    if(!st||strstr(body,"\"idle\"")) return;
-    char* idp=strstr(body,"\"id\":");
-    char* cmdp=strstr(body,"\"cmd\":");
-    if(!cmdp) return;
-    cmdp+=7;
-    char* cend=strchr(cmdp,'"');
-    if(!cend) return;
-    int clen=cend-cmdp;
-    if(clen<=0||clen>256) return;
-    char cmd[256];memcpy(cmd,cmdp,clen);cmd[clen]=0;
-    if(idp){cmdCurrentId=atoi(idp+5);}
-
-    Serial.printf("[CMD] Executing: %s\n",cmd);
-    const char* res=cmdExecute(cmd);
-
-    // POST result back
-    WiFiClientSecure rc;
-    rc.setInsecure();
-    rc.setTimeout(10000);
-    if(rc.connect(ytServerIP,443)){
-        char body2[700];
-        snprintf(body2,700,"{\"id\":%d,\"result\":\"%s\"}",cmdCurrentId,res);
-        int len=strlen(body2);
-        rc.printf("POST /api/cmd/result HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",ytServerIP,len,body2);
-        uint32_t t1=millis();
-        while(rc.connected()&&millis()-t1<5000){
-            if(rc.available()) rc.read();
-            else delay(5);
         }
-        rc.stop();
+        vTaskDelay(3000 / portTICK_PERIOD_MS);
     }
-    Serial.printf("[CMD] Result sent: %s\n",res);
 }
 
 // ============================================================
@@ -1613,9 +1801,6 @@ void loop(){
 
     // MJPEG MUST be last — nothing should draw over it
     ytUpdateStream();
-    
-    // Remote command polling — check server for commands every ~3s
-    cmdPoll();
     
     mouseDraw(&M5Cardputer.Display);
     delay(5);

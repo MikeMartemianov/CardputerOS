@@ -947,6 +947,7 @@ def api_pipe(video_id):
     The MJPEG output is stored frame-by-frame in _pipe_mjpeg_buf and
     served by /api/stream_pipe."""
     _pipe_active.set()
+    global _pipe_mjpeg_buf
     _pipe_mjpeg_buf = b''
     print(f"[Pipe] Starting pipe for {video_id}")
 
