@@ -635,6 +635,15 @@ def api_pot_test():
                     results['bgutil_direct'] = f'HTTP {resp.status}: {body[:200]}'
             except Exception as e:
                 results['bgutil_direct'] = f'ERROR: {e}'
+            # Test with curl_cffi impersonation (browser TLS)
+            try:
+                from curl_cffi import requests as cffi_requests
+                resp = cffi_requests.get(
+                    'https://api.bgp.gg/yt-dlp-pots/app/pot',
+                    impersonate='chrome', timeout=15)
+                results['bgutil_cffi'] = f'HTTP {resp.status_code}: {resp.text[:200]}'
+            except Exception as e:
+                results['bgutil_cffi'] = f'ERROR: {e}'
     except Exception as e:
         results['import_error'] = str(e)[:200]
     return jsonify(results)
