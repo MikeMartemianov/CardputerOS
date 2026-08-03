@@ -397,17 +397,23 @@ def api_scan():
         ejs_ok = True
     except ImportError:
         pass
+    try:
+        from curl_cffi import requests
+        curl_ok = True
+    except Exception:
+        curl_ok = False
     
     return jsonify({
         'status': 'ok',
-        'version': '6.0',
+        'version': '6.1',
         'name': 'CardputerOS YouTube Server',
-        'strategies': ['yt-dlp', 'innertube'],
+        'strategies': ['yt-dlp', 'innertube', 'curl_cffi'],
         'cookies': f'{cookies_size} bytes' if cookies_exist else 'missing',
         'sapisid': 'yes' if extractor._sapisid else 'no',
         'ytdlp': f'{ytdlp_ver} ok={ytdlp_ok}',
         'node': f'{node_ver} ok={node_ok}',
         'ejs': ejs_ok,
+        'curl_cffi': curl_ok,
         'mjpeg_fps': MJPEG_FPS,
     })
 
