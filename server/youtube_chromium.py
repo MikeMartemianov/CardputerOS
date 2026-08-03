@@ -1080,11 +1080,19 @@ def api_pipe_diag():
     """Debug: pipe state and generator counters."""
     with _pipe_mjpeg_lock:
         buf_len = len(_pipe_mjpeg_buf)
+    # Thread dump: see where the stream generator is stuck
+    threads = []
+    import sys as _sys, traceback as _tb
+    for th in threading.enumerate():
+        frm = _sys._current_frames().get(th.ident, None)
+        stack = ''.join(_tb.format_stack(frm)) if frm else 'no frame'
+        threads.append({'name': th.name, 'daemon': th.daemon, 'stack_tail': stack.strip().split('\n')[-4:]})
     return jsonify({
         'active': _pipe_active.is_set(),
         'buf_len': buf_len,
         'last_frame_age': round(time.time() - _pipe_last_frame, 2) if _pipe_last_frame else -1,
         'diag': _pipe_diag,
+        'threads': threads,
     })
 
 
