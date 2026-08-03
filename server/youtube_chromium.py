@@ -149,7 +149,6 @@ class VideoExtractor:
             'extractor_args': {
                 'youtube': {
                     'player_client': ['android'],
-                    'po_token': ['android+bgutil'],
                 }
             },
             'http_headers': {
@@ -157,13 +156,12 @@ class VideoExtractor:
             },
         }
         # Chrome TLS impersonation — bypasses YouTube bot detection on
-        # datacenter IPs (Render). Combined with android client + PO token
-        # from the public bgutil provider (works on any IP).
+        # datacenter IPs (Render). android client works without PO token.
         # NO cookies: YouTube binds cookies to the IP they were created on.
         try:
             from yt_dlp.networking.impersonate import ImpersonateTarget
             ydl_opts['impersonate'] = ImpersonateTarget.from_str('chrome')
-            print("[yt-dlp] Using Chrome impersonation + android + PO token")
+            print("[yt-dlp] Using Chrome impersonation + android")
         except Exception as e:
             print(f"[yt-dlp] Impersonation unavailable: {e}")
             self._last_error = f"impersonate: {e}"
@@ -216,12 +214,16 @@ class VideoExtractor:
                 body = json.loads(resp.read())
 
             if 'error' in body:
-                print(f"[Innertube] API error: {body['error'].get('message', '?')}")
+                msg = body['error'].get('message', '?')
+                print(f"[Innertube] API error: {msg}")
+                self._last_error = f"innertube: {msg}"
                 return None
 
             ps = body.get('playabilityStatus', {})
             if ps.get('status') not in ('OK', None):
-                print(f"[Innertube] {video_id}: status={ps.get('status')} reason={ps.get('reason','')[:60]}")
+                reason = ps.get('reason', '')[:80]
+                print(f"[Innertube] {video_id}: status={ps.get('status')} reason={reason}")
+                self._last_error = f"innertube: {ps.get('status')} {reason}"
                 return None
 
             streaming = body.get('streamingData', {})
