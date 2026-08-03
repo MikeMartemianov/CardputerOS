@@ -939,7 +939,7 @@ _pipe_mjpeg_lock = threading.Lock()
 _pipe_active = threading.Event()
 _pipe_active.clear()
 _pipe_last_frame = 0.0     # time.time() of last buffered frame
-_pipe_diag = {'gen_starts': 0, 'gen_yields': 0, 'gen_errors': 0, 'gen_err': ''}
+_pipe_diag = {'gen_starts': 0, 'gen_yields': 0, 'gen_errors': 0, 'gen_err': '', 'stage': 'init'}
 
 
 @app.route('/api/pipe/<video_id>', methods=['POST'])
@@ -1054,16 +1054,23 @@ def api_stream_pipe():
         _pipe_diag['gen_starts'] += 1
         try:
             while _pipe_active.is_set() or (time.time() - _pipe_last_frame < 15):
-                with _pipe_mjpeg_lock:
-                    frame = _pipe_mjpeg_buf
+                _pipe_diag['stage'] = 'loop'
+                # Reading a bytes value is atomic in CPython; no lock needed.
+                frame = _pipe_mjpeg_buf
+                _pipe_diag['stage'] = 'read_done'
                 if frame:
                     _pipe_diag['gen_yields'] += 1
+                    _pipe_diag['stage'] = 'pre_yield'
                     yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'
                            + frame + b'\r\n')
+                    _pipe_diag['stage'] = 'post_yield'
+                else:
+                    _pipe_diag['stage'] = 'no_frame'
                 time.sleep(1.0 / MJPEG_FPS)
         except Exception as e:
             _pipe_diag['gen_errors'] += 1
             _pipe_diag['gen_err'] = str(e)[:200]
+            _pipe_diag['stage'] = 'exception'
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame',
                     headers={'Cache-Control': 'no-cache'})
 
