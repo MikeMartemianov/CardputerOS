@@ -907,30 +907,6 @@ def api_cmd_result():
         })
 
 
-@app.route('/api/proxy_test')
-def api_proxy_test():
-    """Test: can Render download a googlevideo URL extracted elsewhere?"""
-    url = request.args.get('url', '')
-    if not url:
-        return jsonify({'error': 'no url'})
-    try:
-        import urllib.request
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0',
-            'Referer': 'https://www.youtube.com/',
-        })
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = resp.read(4096)
-            return jsonify({
-                'status': 'ok' if len(data) else 'empty',
-                'http': resp.status,
-                'content_type': resp.headers.get('Content-Type', ''),
-                'bytes': len(data),
-            })
-    except Exception as e:
-        return jsonify({'status': 'error', 'error': str(e)[:200]})
-
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     print("=" * 50)
