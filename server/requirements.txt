@@ -1,3 +1,2 @@
 flask>=2.3.0
-yt-dlp[default]>=2024.1.0
-curl_cffi>=0.5.0
+yt-dlp[default,curl-cffi]>=2024.1.0

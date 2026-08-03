@@ -66,6 +66,27 @@ def compute_sapisid_hash(sapisid, origin='https://www.youtube.com'):
     return f"SAPISIDHASH {ts}_{sha1}"
 
 
+def extract_stream_url(fmt):
+    """Extract playable URL from a YouTube format dict.
+    Handles both direct 'url' and 'signatureCipher' (url + s + sp params
+    that must be reassembled as url&sp=s)."""
+    import urllib.parse
+    if 'url' in fmt and fmt['url']:
+        return fmt['url']
+    if 'signatureCipher' in fmt:
+        try:
+            params = dict(urllib.parse.parse_qsl(fmt['signatureCipher']))
+            url = params.get('url', '')
+            sig = params.get('s', '')
+            sp = params.get('sp', 'sig')
+            if url and sig:
+                sep = '&' if '?' in url else '?'
+                return f"{url}{sep}{sp}={sig}"
+        except Exception as e:
+            print(f"[extract_stream_url] signatureCipher parse error: {e}")
+    return None
+
+
 class VideoExtractor:
     def __init__(self):
         self._cache = {}
@@ -133,6 +154,14 @@ class VideoExtractor:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             },
         }
+        # Impersonate Chrome TLS fingerprint — bypasses YouTube bot detection
+        # on datacenter IPs (Render). Requires yt-dlp[curl-cffi].
+        try:
+            from yt_dlp.networking.impersonate import ImpersonateTarget
+            ydl_opts['impersonate'] = ImpersonateTarget.from_str('chrome')
+            print("[yt-dlp] Using Chrome impersonation")
+        except Exception as e:
+            print(f"[yt-dlp] Impersonation unavailable: {e}")
         if cookies_exist and cookies_size > 50:
             ydl_opts['cookies'] = COOKIES_PATH
             print(f"[yt-dlp] Using cookies ({cookies_size} bytes)")
@@ -190,20 +219,23 @@ class VideoExtractor:
             formats = streaming.get('formats', []) + streaming.get('adaptiveFormats', [])
 
             # Try combined formats first (have audio+video), then any video, then any URL
+            # Handle both direct 'url' and YouTube's 'signatureCipher' (url+s+sp params)
             video_url = None
             for fmt in formats:
-                if fmt.get('mimeType', '').startswith('video/') and 'url' in fmt and fmt.get('audioQuality'):
-                    video_url = fmt['url']
-                    break
-            if not video_url:
-                for fmt in formats:
-                    if fmt.get('mimeType', '').startswith('video/') and 'url' in fmt:
-                        video_url = fmt['url']
+                if fmt.get('mimeType', '').startswith('video/') and fmt.get('audioQuality'):
+                    video_url = extract_stream_url(fmt)
+                    if video_url:
                         break
             if not video_url:
                 for fmt in formats:
-                    if 'url' in fmt:
-                        video_url = fmt['url']
+                    if fmt.get('mimeType', '').startswith('video/'):
+                        video_url = extract_stream_url(fmt)
+                        if video_url:
+                            break
+            if not video_url:
+                for fmt in formats:
+                    video_url = extract_stream_url(fmt)
+                    if video_url:
                         break
 
             title = body.get('videoDetails', {}).get('title', 'Unknown')
