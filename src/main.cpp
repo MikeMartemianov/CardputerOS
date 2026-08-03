@@ -426,9 +426,10 @@ static bool ytExtractVideoUrl(const char* videoId, char* urlBuf, int urlBufSize)
     char apiUrl[256];
     snprintf(apiUrl, 256, "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8");
 
-    // Build POST body
-    char body[300];
-    snprintf(body, 300, "{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"2.20250101.00.00\"}},\"videoId\":\"%s\"}", videoId);
+    // Build POST body — ANDROID client gives DIRECT playable URLs
+    // (no signatureCipher, no n-function, no PO token needed)
+    char body[350];
+    snprintf(body, 350, "{\"context\":{\"client\":{\"clientName\":\"ANDROID\",\"clientVersion\":\"20.10.33\",\"androidSdkVersion\":33,\"osName\":\"Android\",\"osVersion\":\"14\"}},\"videoId\":\"%s\"}", videoId);
 
     static WiFiClientSecure ytInnertubeClient;
     static HTTPClient ytInnertubeHttp;
@@ -452,7 +453,7 @@ static bool ytExtractVideoUrl(const char* videoId, char* urlBuf, int urlBufSize)
         return false;
     }
 
-    static char respBuf[8192];
+    static char respBuf[10240];
     int respLen = 0;
     WiFiClient* stream = ytInnertubeHttp.getStreamPtr();
     if(!stream) { ytInnertubeHttp.end(); return false; }
@@ -466,8 +467,10 @@ static bool ytExtractVideoUrl(const char* videoId, char* urlBuf, int urlBufSize)
             int toRead = (avail < space) ? avail : space;
             int n = stream->read((uint8_t*)(respBuf + respLen), toRead);
             if(n > 0) respLen += n;
-            // Early termination: if we found the URL, stop reading
-            if(strstr(respBuf, "\"url\":")) break;
+            respBuf[respLen] = 0;
+            // Early termination: URL is at byte ~4800 in "formats" — stop once found
+            const char* fStart = strstr(respBuf, "\"formats\"");
+            if(fStart && strstr(fStart, "\"url\":\"")) break;
         } else {
             delay(10);
         }
@@ -1043,10 +1046,23 @@ static void ytHandleKey(OsKey k, char ch) {
                 ytScreen=YTS_PLAYER; drawYouTube();
                 return;
             }
-            // Step 2: Start MJPEG stream — server extracts URL via curl_cffi (browser emulation)
+            // Step 2: Extract video URL via Innertube ANDROID API from HOME IP
+            // (Render datacenter IP is blocked by YouTube - LOGIN_REQUIRED)
+            clear(C_BLACK);
+            dTxt(30,20,"YouTube Stream",C_RED);
+            dTxt(30,45,"Extracting URL...",C_CYAN);
+            M5Cardputer.Display.display();
+            bool urlOk = ytExtractVideoUrl(ytResults[ytResultSel].id, ytExtractedUrl, sizeof(ytExtractedUrl));
+            if(!urlOk || !ytExtractedUrl[0]) {
+                ytExtractedUrl[0] = 0;
+                clear(C_BLACK);
+                dTxt(30,50,"URL extraction failed",C_YELLOW);
+                dTxt(30,70,"Trying server...",C_LGRAY);
+                M5Cardputer.Display.display();
+            }
+            // Step 3: Start MJPEG stream — pass URL to server if extracted
             clear(C_BLACK);
             dTxt(30,50,"Starting stream...",C_CYAN);
-            dTxt(30,70,"(browser emulation)",C_LGRAY);
             M5Cardputer.Display.display();
             Serial.println("[STREAM] Connecting to server...");
             Serial.flush();
@@ -1054,9 +1070,16 @@ static void ytHandleKey(OsKey k, char ch) {
             ytStreamClient.setInsecure();
             ytStreamClient.setTimeout(60000);
             if(ytStreamClient.connect(ytServerIP, 443)) {
-                snprintf(ytStreamReq,2300,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\n\r\n",
-                         ytResults[ytResultSel].id, ytServerIP);
-                Serial.printf("[STREAM] Sending request (server-side extraction)\n");
+                if(urlOk && ytExtractedUrl[0]) {
+                    urlEncode(ytExtractedUrl, ytEncodedUrl, sizeof(ytEncodedUrl));
+                    snprintf(ytStreamReq,2300,"GET /api/stream/%s?url=%s HTTP/1.1\r\nHost: %s\r\n\r\n",
+                             ytResults[ytResultSel].id, ytEncodedUrl, ytServerIP);
+                    Serial.printf("[STREAM] Sending request with ESP32-extracted URL\n");
+                } else {
+                    snprintf(ytStreamReq,2300,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\n\r\n",
+                             ytResults[ytResultSel].id, ytServerIP);
+                    Serial.printf("[STREAM] Sending request (server-side extraction)\n");
+                }
                 Serial.flush();
                 ytStreamClient.print(ytStreamReq);
                 ytLastStatus = ytReadHTTPStatus();
