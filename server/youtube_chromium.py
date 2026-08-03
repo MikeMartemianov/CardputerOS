@@ -102,10 +102,7 @@ class VideoExtractor:
         if result:
             return self._cache_and_return(video_id, result)
 
-        # Strategy 4: Playwright browser (bypasses bot detection)
-        result = self._try_playwright(video_id)
-        if result:
-            return self._cache_and_return(video_id, result)
+        return None
 
         return None
 
@@ -227,8 +224,8 @@ class VideoExtractor:
         Lightweight: no Chromium, no CPU-heavy rendering."""
         try:
             from curl_cffi import requests as cffi_requests
-        except ImportError:
-            print("[curl_cffi] Not installed, skipping")
+        except Exception as e:
+            print(f"[curl_cffi] Import failed: {e}")
             return None
 
         # Try multiple mobile clients — these work without cookies/PO tokens
@@ -418,7 +415,11 @@ def api_scan():
 @app.route('/api/debug/<video_id>')
 @app.route('/streams/<video_id>')
 def api_debug(video_id):
-    info = extractor.get_video_url(video_id)
+    try:
+        info = extractor.get_video_url(video_id)
+    except Exception as e:
+        print(f"[Debug] Extraction error: {e}")
+        info = None
     if info:
         # For /streams/ route, return Piped-compatible format
         if request.path.startswith('/streams/'):
@@ -473,7 +474,11 @@ def api_stream(video_id):
             print(f"[Stream] MJPEG for {video_id}, source={source} (ESP32-provided URL)")
         else:
             # Server-side extraction (may fail on Render due to IP blocking)
-            info = extractor.get_video_url(video_id)
+            try:
+                info = extractor.get_video_url(video_id)
+            except Exception as e:
+                print(f"[Stream] Extraction error: {e}")
+                info = None
             if not info:
                 print(f"[Stream] No URL for {video_id}")
                 return
