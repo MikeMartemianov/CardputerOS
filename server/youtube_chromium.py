@@ -938,6 +938,8 @@ _pipe_mjpeg_buf = b''      # Latest complete MJPEG frame
 _pipe_mjpeg_lock = threading.Lock()
 _pipe_active = threading.Event()
 _pipe_active.clear()
+_pipe_last_frame = 0.0     # time.time() of last buffered frame
+_pipe_diag = {'gen_starts': 0, 'gen_yields': 0, 'gen_errors': 0, 'gen_err': ''}
 
 
 @app.route('/api/pipe/<video_id>', methods=['POST'])
@@ -969,7 +971,7 @@ def api_pipe(video_id):
 
     def mjpeg_to_buf(process):
         """Read ffmpeg MJPEG output, keep latest frame in buffer."""
-        global _pipe_mjpeg_buf
+        global _pipe_mjpeg_buf, _pipe_last_frame
         frame = bytearray()
         while True:
             chunk = process.stdout.read(65536)
@@ -986,6 +988,7 @@ def api_pipe(video_id):
                 if len(complete) > 100:
                     with _pipe_mjpeg_lock:
                         _pipe_mjpeg_buf = complete
+                    _pipe_last_frame = time.time()
                     stats['frames'] += 1
                     if stats['frames'] == 1:
                         stats['first_frame'] = time.time()
@@ -1043,17 +1046,39 @@ def api_pipe(video_id):
 
 @app.route('/api/stream_pipe')
 def api_stream_pipe():
-    """Serve latest MJPEG frame from the pipe as multipart stream."""
+    """Serve latest MJPEG frame from the pipe as multipart stream.
+    Frames are served while the pipe is active, plus a 15s grace period
+    after it closes (so a late-opened stream still gets buffered frames)."""
     def generate():
-        while _pipe_active.is_set():
-            with _pipe_mjpeg_lock:
-                frame = _pipe_mjpeg_buf
-            if frame:
-                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'
-                       + frame + b'\r\n')
-            time.sleep(1.0 / MJPEG_FPS)
+        global _pipe_diag
+        _pipe_diag['gen_starts'] += 1
+        try:
+            while _pipe_active.is_set() or (time.time() - _pipe_last_frame < 15):
+                with _pipe_mjpeg_lock:
+                    frame = _pipe_mjpeg_buf
+                if frame:
+                    _pipe_diag['gen_yields'] += 1
+                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'
+                           + frame + b'\r\n')
+                time.sleep(1.0 / MJPEG_FPS)
+        except Exception as e:
+            _pipe_diag['gen_errors'] += 1
+            _pipe_diag['gen_err'] = str(e)[:200]
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame',
                     headers={'Cache-Control': 'no-cache'})
+
+
+@app.route('/api/pipe_diag')
+def api_pipe_diag():
+    """Debug: pipe state and generator counters."""
+    with _pipe_mjpeg_lock:
+        buf_len = len(_pipe_mjpeg_buf)
+    return jsonify({
+        'active': _pipe_active.is_set(),
+        'buf_len': buf_len,
+        'last_frame_age': round(time.time() - _pipe_last_frame, 2) if _pipe_last_frame else -1,
+        'diag': _pipe_diag,
+    })
 
 
 if __name__ == '__main__':
