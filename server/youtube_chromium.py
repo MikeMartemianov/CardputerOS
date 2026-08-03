@@ -194,59 +194,62 @@ class VideoExtractor:
             return None
 
     def _try_innertube(self, video_id):
+        """ANDROID client via Innertube — returns DIRECT playable URLs
+        (no signatureCipher, no n-function, no PO token needed).
+        Works from any IP including Render datacenter."""
         try:
-            headers = {
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                'Origin': 'https://www.youtube.com',
-            }
-            if self._sapisid and self._cookie_header:
-                headers['Authorization'] = compute_sapisid_hash(self._sapisid)
-                headers['Cookie'] = self._cookie_header
-            elif self._cookie_header:
-                headers['Cookie'] = self._cookie_header
-
             payload = {
-                'context': {'client': {'clientName': 'WEB', 'clientVersion': '2.20250101.00.00'}},
+                'context': {'client': {
+                    'clientName': 'ANDROID', 'clientVersion': '20.10.33',
+                    'androidSdkVersion': 33, 'osName': 'Android', 'osVersion': '14',
+                }},
                 'videoId': video_id,
             }
             api_key = INNERTUBE_API_KEY
             player_url = f'https://www.youtube.com/youtubei/v1/player?key={api_key}'
 
             data = json.dumps(payload).encode('utf-8')
-            req = urllib.request.Request(player_url, data=data, headers=headers, method='POST')
+            req = urllib.request.Request(player_url, data=data, method='POST')
+            req.add_header('Content-Type', 'application/json')
+            req.add_header('Origin', 'https://www.youtube.com')
             with urllib.request.urlopen(req, timeout=15) as resp:
                 body = json.loads(resp.read())
+
+            if 'error' in body:
+                print(f"[Innertube] API error: {body['error'].get('message', '?')}")
+                return None
+
+            ps = body.get('playabilityStatus', {})
+            if ps.get('status') not in ('OK', None):
+                print(f"[Innertube] {video_id}: status={ps.get('status')} reason={ps.get('reason','')[:60]}")
+                return None
 
             streaming = body.get('streamingData', {})
             formats = streaming.get('formats', []) + streaming.get('adaptiveFormats', [])
 
-            # Try combined formats first (have audio+video), then any video, then any URL
-            # Handle both direct 'url' and YouTube's 'signatureCipher' (url+s+sp params)
+            # Try combined mp4 with audio first, then any video, then any URL
             video_url = None
             for fmt in formats:
-                if fmt.get('mimeType', '').startswith('video/') and fmt.get('audioQuality'):
-                    video_url = extract_stream_url(fmt)
-                    if video_url:
+                if fmt.get('mimeType', '').startswith('video/mp4') and fmt.get('url') and fmt.get('audioQuality'):
+                    video_url = fmt['url']
+                    break
+            if not video_url:
+                for fmt in formats:
+                    if fmt.get('mimeType', '').startswith('video/') and fmt.get('url'):
+                        video_url = fmt['url']
                         break
             if not video_url:
                 for fmt in formats:
-                    if fmt.get('mimeType', '').startswith('video/'):
-                        video_url = extract_stream_url(fmt)
-                        if video_url:
-                            break
-            if not video_url:
-                for fmt in formats:
-                    video_url = extract_stream_url(fmt)
-                    if video_url:
+                    if fmt.get('url'):
+                        video_url = fmt['url']
                         break
 
             title = body.get('videoDetails', {}).get('title', 'Unknown')
             duration = int(body.get('videoDetails', {}).get('lengthSeconds', 0))
 
             if video_url:
-                print(f"[Innertube] Success for {video_id}")
-                return {'url': video_url, 'title': title, 'duration': duration, 'source': 'innertube'}
+                print(f"[Innertube] ANDROID Success for {video_id}")
+                return {'url': video_url, 'title': title, 'duration': duration, 'source': 'innertube-android'}
 
         except Exception as e:
             print(f"[Innertube] Error: {e}")
