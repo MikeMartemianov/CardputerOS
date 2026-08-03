@@ -109,15 +109,16 @@ class VideoExtractor:
             if video_id in self._cache and self._is_cache_valid(self._cache[video_id]):
                 return self._cache[video_id]
 
-        # Strategy 1: yt-dlp with Chrome TLS impersonation.
-        # This is the ONLY strategy that produces PLAYABLE URLs:
-        # it decrypts YouTube's signatureCipher AND n-function challenge,
-        # while impersonating a real Chrome TLS fingerprint to bypass
-        # bot detection on datacenter IPs (Render free tier).
-        # The Innertube/curl_cffi fallbacks were removed because they return
-        # URLs with unresolved n-function -> ffmpeg gets HTTP 403 and
-        # the stream produces 0 frames.
+        # Strategy 1: yt-dlp with Chrome TLS impersonation (+ PO token).
+        # Decrypts signatureCipher + n-function, produces PLAYABLE URLs.
         result = self._try_ytdlp(video_id)
+        if result:
+            return self._cache_and_return(video_id, result)
+
+        # Strategy 2: Innertube API fallback.
+        # Works on Render for videos that do NOT require a PO token
+        # (non-popular content). Returns direct or signatureCipher URLs.
+        result = self._try_innertube(video_id)
         if result:
             return self._cache_and_return(video_id, result)
 
