@@ -418,6 +418,56 @@ def api_scan():
     })
 
 
+@app.route('/api/diag/<video_id>')
+def api_diag(video_id):
+    """Diagnostic: show raw response from each curl_cffi client"""
+    results = []
+    try:
+        from curl_cffi import requests as cffi_requests
+        clients = [
+            {'clientName': 'ANDROID', 'clientVersion': '20.10.33',
+             'androidSdkVersion': 33, 'osName': 'Android', 'osVersion': '14'},
+            {'clientName': 'ANDROID', 'clientVersion': '21.02.34',
+             'androidSdkVersion': 35, 'osName': 'Android', 'osVersion': '15'},
+            {'clientName': 'IOS', 'clientVersion': '20.10.4',
+             'deviceMake': 'Apple', 'deviceModel': 'iPhone17,2',
+             'osName': 'iPhone', 'osVersion': '18.3.1'},
+        ]
+        for ctx in clients:
+            try:
+                payload = {'context': {'client': ctx}, 'videoId': video_id}
+                headers = {'Origin': 'https://www.youtube.com'}
+                if ctx['clientName'] == 'ANDROID':
+                    headers['User-Agent'] = 'com.google.android.youtube/20.10.33 (Linux; U; Android 14) gzip'
+                resp = cffi_requests.post(
+                    'https://www.youtube.com/youtubei/v1/player?key=' + INNERTUBE_API_KEY,
+                    json=payload, impersonate='chrome', headers=headers, timeout=20)
+                body = resp.json()
+                if 'error' in body:
+                    results.append({
+                        'client': ctx['clientName'] + '/' + ctx['clientVersion'],
+                        'http': resp.status_code,
+                        'error': body['error'].get('message', '?'),
+                    })
+                    continue
+                sd = body.get('streamingData', {})
+                fmts = sd.get('formats', []) + sd.get('adaptiveFormats', [])
+                has_url = any('url' in f for f in fmts)
+                results.append({
+                    'client': ctx['clientName'] + '/' + ctx['clientVersion'],
+                    'http': resp.status_code,
+                    'playability': body.get('playabilityStatus', {}).get('status', '?'),
+                    'reason': body.get('playabilityStatus', {}).get('reason', '')[:60],
+                    'formats': len(fmts),
+                    'has_url': has_url,
+                })
+            except Exception as e:
+                results.append({'client': ctx['clientName'], 'error': str(e)[:100]})
+    except Exception as e:
+        results.append({'import_error': str(e)[:100]})
+    return jsonify({'video_id': video_id, 'results': results})
+
+
 @app.route('/api/debug/<video_id>')
 @app.route('/streams/<video_id>')
 def api_debug(video_id):
