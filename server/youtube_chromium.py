@@ -1075,6 +1075,17 @@ def api_stream_pipe():
                     headers={'Cache-Control': 'no-cache'})
 
 
+@app.route('/api/pipe_frame')
+def api_pipe_frame():
+    """Debug: return the latest buffered frame as a single JPEG."""
+    with _pipe_mjpeg_lock:
+        frame = _pipe_mjpeg_buf
+    if frame:
+        return Response(frame, mimetype='image/jpeg',
+                        headers={'Cache-Control': 'no-cache', 'X-Frame-Len': str(len(frame))})
+    return jsonify({'status': 'no frame', 'buf_len': 0}), 404
+
+
 @app.route('/api/pipe_diag')
 def api_pipe_diag():
     """Debug: pipe state and generator counters."""
@@ -1086,7 +1097,8 @@ def api_pipe_diag():
     for th in threading.enumerate():
         frm = _sys._current_frames().get(th.ident, None)
         stack = ''.join(_tb.format_stack(frm)) if frm else 'no frame'
-        threads.append({'name': th.name, 'daemon': th.daemon, 'stack_tail': stack.strip().split('\n')[-4:]})
+        lines = stack.strip().split('\n')
+        threads.append({'name': th.name, 'stack_tail': lines[-8:]})
     return jsonify({
         'active': _pipe_active.is_set(),
         'buf_len': buf_len,
