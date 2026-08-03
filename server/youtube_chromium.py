@@ -444,9 +444,9 @@ def api_scan():
     
     return jsonify({
         'status': 'ok',
-        'version': '6.1',
+        'version': '6.2',
         'name': 'CardputerOS YouTube Server',
-        'strategies': ['yt-dlp', 'innertube', 'curl_cffi'],
+        'strategies': ['yt-dlp+impersonate'],
         'cookies': f'{cookies_size} bytes' if cookies_exist else 'missing',
         'sapisid': 'yes' if extractor._sapisid else 'no',
         'ytdlp': f'{ytdlp_ver} ok={ytdlp_ok}',
