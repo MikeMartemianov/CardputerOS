@@ -951,6 +951,22 @@ def api_pipe(video_id):
     _pipe_mjpeg_buf = b''
     print(f"[Pipe] Starting pipe for {video_id}")
 
+    stats = {'bytes': 0, 'frames': 0, 'first_frame': 0.0}
+    ffmpeg_err = []
+
+    def stderr_logger(proc):
+        while True:
+            line = proc.stderr.readline()
+            if not line:
+                break
+            try:
+                txt = line.decode('utf-8', errors='replace').strip()
+            except Exception:
+                txt = str(line).strip()
+            ffmpeg_err.append(txt)
+            if len(ffmpeg_err) > 40:
+                ffmpeg_err.pop(0)
+
     def mjpeg_to_buf(process):
         """Read ffmpeg MJPEG output, keep latest frame in buffer."""
         global _pipe_mjpeg_buf
@@ -970,6 +986,10 @@ def api_pipe(video_id):
                 if len(complete) > 100:
                     with _pipe_mjpeg_lock:
                         _pipe_mjpeg_buf = complete
+                    stats['frames'] += 1
+                    if stats['frames'] == 1:
+                        stats['first_frame'] = time.time()
+                        print(f"[Pipe] First MJPEG frame OK ({len(complete)} bytes)")
 
     ffmpeg_cmd = [
         'ffmpeg', '-i', 'pipe:0',
@@ -979,30 +999,46 @@ def api_pipe(video_id):
     process = None
     try:
         process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE,
-                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        # Reader thread: ffmpeg stdout -> buffer
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Reader threads: ffmpeg stdout -> buffer, stderr -> log
         t = threading.Thread(target=mjpeg_to_buf, args=(process,), daemon=True)
         t.start()
+        te = threading.Thread(target=stderr_logger, args=(process,), daemon=True)
+        te.start()
         # Stream request body into ffmpeg stdin
         chunk_size = 16384
         while True:
             chunk = request.stream.read(chunk_size)
             if not chunk:
                 break
+            stats['bytes'] += len(chunk)
             process.stdin.write(chunk)
             process.stdin.flush()
     except Exception as e:
         print(f"[Pipe] Error: {e}")
+        ffmpeg_err.append(f'exc: {e}')
     finally:
+        rc = None
         if process:
             try:
                 process.stdin.close()
             except Exception:
                 pass
-            process.wait(timeout=10)
+            try:
+                process.wait(timeout=10)
+                rc = process.returncode
+            except Exception as e:
+                ffmpeg_err.append(f'wait: {e}')
         _pipe_active.clear()
-        print(f"[Pipe] Pipe closed for {video_id}")
-        return jsonify({'status': 'done'})
+        print(f"[Pipe] Pipe closed for {video_id}: bytes={stats['bytes']} frames={stats['frames']} rc={rc}")
+        return jsonify({
+            'status': 'done',
+            'bytes': stats['bytes'],
+            'frames': stats['frames'],
+            'first_frame_at': round(stats['first_frame'], 3) if stats['first_frame'] else 0,
+            'ffmpeg_rc': rc,
+            'ffmpeg_err': ffmpeg_err[-10:],
+        })
 
 
 @app.route('/api/stream_pipe')
