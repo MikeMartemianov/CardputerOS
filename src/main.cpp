@@ -1060,74 +1060,135 @@ static void ytHandleKey(OsKey k, char ch) {
                 dTxt(30,70,"Trying server...",C_LGRAY);
                 M5Cardputer.Display.display();
             }
-            // Step 3: Start MJPEG stream — pass URL to server if extracted
+            // Step 3: Relay video from googlevideo (home IP) -> Render pipe
             clear(C_BLACK);
-            dTxt(30,50,"Starting stream...",C_CYAN);
+            dTxt(30,50,"Starting relay...",C_CYAN);
             M5Cardputer.Display.display();
-            Serial.println("[STREAM] Connecting to server...");
+            Serial.println("[STREAM] Opening video relay...");
             Serial.flush();
-            ytStreamClient.stop();
-            ytStreamClient.setInsecure();
-            ytStreamClient.setTimeout(60000);
-            if(ytStreamClient.connect(ytServerIP, 443)) {
-                if(urlOk && ytExtractedUrl[0]) {
-                    urlEncode(ytExtractedUrl, ytEncodedUrl, sizeof(ytEncodedUrl));
-                    snprintf(ytStreamReq,2300,"GET /api/stream/%s?url=%s HTTP/1.1\r\nHost: %s\r\n\r\n",
-                             ytResults[ytResultSel].id, ytEncodedUrl, ytServerIP);
-                    Serial.printf("[STREAM] Sending request with ESP32-extracted URL\n");
-                } else {
+
+            // 3a: Open connection to googlevideo (our IP matches URL ip=)
+            bool relayStarted = false;
+            WiFiClientSecure videoClient;
+            if(urlOk && ytExtractedUrl[0]) {
+                // Parse host from URL
+                char host[128]=""; char path[1600]="";
+                const char* hp = strstr(ytExtractedUrl, "://");
+                if(hp) {
+                    hp += 3;
+                    const char* slash = strchr(hp, '/');
+                    if(slash) {
+                        int hl = slash - hp; if(hl>120) hl=120;
+                        memcpy(host, hp, hl); host[hl]=0;
+                        strncpy(path, slash, 1590);
+                    }
+                }
+                if(host[0] && path[0]) {
+                    videoClient.setInsecure();
+                    videoClient.setTimeout(30000);
+                    Serial.printf("[STREAM] Connecting to video host: %s\n", host);
+                    if(videoClient.connect(host, 443)) {
+                        snprintf(ytStreamReq,2300,"GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0\r\nReferer: https://www.youtube.com/\r\nConnection: close\r\n\r\n", path, host);
+                        videoClient.print(ytStreamReq);
+                        relayStarted = true;
+                    } else {
+                        Serial.println("[STREAM] Video host connect FAILED");
+                    }
+                }
+            }
+            if(!relayStarted) {
+                // Fallback: old direct server stream (server-side extraction)
+                Serial.println("[STREAM] Relay failed, fallback to server stream");
+                ytStreamClient.stop();
+                ytStreamClient.setInsecure();
+                ytStreamClient.setTimeout(60000);
+                if(ytStreamClient.connect(ytServerIP, 443)) {
                     snprintf(ytStreamReq,2300,"GET /api/stream/%s HTTP/1.1\r\nHost: %s\r\n\r\n",
                              ytResults[ytResultSel].id, ytServerIP);
-                    Serial.printf("[STREAM] Sending request (server-side extraction)\n");
-                }
-                Serial.flush();
-                ytStreamClient.print(ytStreamReq);
-                ytLastStatus = ytReadHTTPStatus();
-                Serial.printf("[STREAM] HTTP status: %d\n", ytLastStatus);
-                Serial.flush();
-                if(ytLastStatus == 200) {
-                    ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0; ytLastDataTime=millis(); ytReconnectCount=0;
-                    // Process body bytes consumed during header parsing
-                    if(ytHeaderBodyLen > 0) {
-                        Serial.printf("[STREAM] Processing %d pre-read body bytes\n", ytHeaderBodyLen);
-                        for(int bi=0; bi<ytHeaderBodyLen; bi++) {
-                            if(ytParseByte(ytHeaderBodyBuf[bi])) ytDrawFrame();
-                        }
-                        ytLastDataTime = millis();
+                    ytStreamClient.print(ytStreamReq);
+                    ytLastStatus = ytReadHTTPStatus();
+                    if(ytLastStatus == 200) {
+                        ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0; ytLastDataTime=millis(); ytReconnectCount=0;
+                        clear(C_BLACK);
+                        fRect(0,0,240,10,C_RED); dTxt(4,1,"LIVE",C_WHITE);
+                        if(ytFramesDrawn==0) { dTxt(30,60,"Loading video...",C_CYAN); }
+                        M5Cardputer.Display.display();
                     }
-                    clear(C_BLACK);
-                    fRect(0,0,240,10,C_RED); dTxt(4,1,"LIVE",C_WHITE);
-                    if(ytFramesDrawn==0) { dTxt(30,60,"Loading video...",C_CYAN); }
-                    M5Cardputer.Display.display();
-                } else if(ytLastStatus == 308 && ytRedirectURL[0]) {
-                    // Follow redirect — strip trailing slash to avoid 404
-                    ytStreamClient.stop();
-                    String locStr = String(ytRedirectURL);
-                    while(locStr.endsWith("/")) locStr.remove(locStr.length()-1);
-                    int protoEnd = locStr.indexOf("://");
-                    int hostStart = (protoEnd>=0) ? protoEnd+3 : 0;
-                    int hostEnd = locStr.indexOf("/", hostStart);
-                    String host = locStr.substring(hostStart, hostEnd);
-                    String path = locStr.substring(hostEnd);
-                    if(ytStreamClient.connect(host.c_str(), 443)) {
-                        snprintf(ytStreamReq,2300,"GET %s HTTP/1.1\r\nHost: %s\r\n\r\n",path.c_str(),host.c_str());
-                        ytStreamClient.print(ytStreamReq);
-                        ytLastStatus = ytReadHTTPStatus();
-                        if(ytLastStatus == 200) {
-                            ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0; ytLastDataTime=millis(); ytReconnectCount=0;
-                            // Process body bytes consumed during header parsing
-                            if(ytHeaderBodyLen > 0) {
-                                Serial.printf("[STREAM] Pre-read %d body bytes (redirect)\n", ytHeaderBodyLen);
-                                for(int bi=0; bi<ytHeaderBodyLen; bi++) {
-                                    if(ytParseByte(ytHeaderBodyBuf[bi])) ytDrawFrame();
+                }
+                // Continue to normal loop
+            } else {
+                // 3b: Connect to Render pipe endpoint
+                WiFiClientSecure pipeClient;
+                pipeClient.setInsecure();
+                pipeClient.setTimeout(30000);
+                Serial.println("[STREAM] Connecting to Render pipe...");
+                if(pipeClient.connect(ytServerIP, 443)) {
+                    // POST /api/pipe/VIDEO_ID with streaming body
+                    snprintf(ytStreamReq,2300,"POST /api/pipe/%s HTTP/1.1\r\nHost: %s\r\nContent-Type: video/mp4\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                             ytResults[ytResultSel].id, ytServerIP);
+                    pipeClient.print(ytStreamReq);
+                    Serial.println("[STREAM] Pipe connected, relaying video...");
+
+                    // 3c: Read video response headers, then relay chunks
+                    uint8_t vbuf[1024];
+                    uint32_t vstart = millis();
+                    bool headersDone = false; int crlfCount = 0;
+                    while(videoClient.connected() && millis()-vstart < 30000) {
+                        if(videoClient.available()) {
+                            int n = videoClient.read(vbuf, sizeof(vbuf));
+                            if(n > 0) {
+                                if(!headersDone) {
+                                    // Scan for \r\n\r\n in the chunk
+                                    for(int i=0;i<n;i++){
+                                        if(vbuf[i]=='\n'){crlfCount++; if(crlfCount>=2){headersDone=true; break;}}
+                                        else if(vbuf[i]!='\r') crlfCount=0;
+                                    }
+                                    if(headersDone) {
+                                        // Find body start in this chunk
+                                        int bodyStart = 0;
+                                        for(int i=0;i<n;i++){
+                                            if(vbuf[i]=='\n'){crlfCount++; if(crlfCount>=2){bodyStart=i+1; break;}}
+                                            else if(vbuf[i]!='\r') crlfCount=0;
+                                        }
+                                        if(bodyStart < n) {
+                                            pipeClient.printf("%X\r\n", n-bodyStart);
+                                            pipeClient.write(vbuf+bodyStart, n-bodyStart);
+                                            pipeClient.print("\r\n");
+                                        }
+                                    }
+                                } else {
+                                    // Relay raw chunk with chunked framing
+                                    pipeClient.printf("%X\r\n", n);
+                                    pipeClient.write(vbuf, n);
+                                    pipeClient.print("\r\n");
                                 }
-                                ytLastDataTime = millis();
                             }
-                            clear(C_BLACK);
-                            fRect(0,0,240,10,C_RED); dTxt(4,1,"LIVE",C_WHITE);
-                            if(ytFramesDrawn==0) { dTxt(30,60,"Loading video...",C_CYAN); }
-                            M5Cardputer.Display.display();
+                        } else {
+                            delay(5);
                         }
+                    }
+                    pipeClient.print("0\r\n\r\n");
+                    pipeClient.stop();
+                    Serial.println("[STREAM] Relay finished");
+                } else {
+                    Serial.println("[STREAM] Pipe connect FAILED");
+                }
+                videoClient.stop();
+                // 3d: Now stream MJPEG back from /api/stream_pipe
+                ytStreamClient.stop();
+                ytStreamClient.setInsecure();
+                ytStreamClient.setTimeout(60000);
+                if(ytStreamClient.connect(ytServerIP, 443)) {
+                    snprintf(ytStreamReq,2300,"GET /api/stream_pipe HTTP/1.1\r\nHost: %s\r\n\r\n", ytServerIP);
+                    ytStreamClient.print(ytStreamReq);
+                    ytLastStatus = ytReadHTTPStatus();
+                    Serial.printf("[STREAM] Pipe stream status: %d\n", ytLastStatus);
+                    if(ytLastStatus == 200) {
+                        ytStreaming=true; ytInFrame=false; ytFrameDataPos=0; ytFramesDrawn=0; ytLastDataTime=millis(); ytReconnectCount=0;
+                        clear(C_BLACK);
+                        fRect(0,0,240,10,C_RED); dTxt(4,1,"LIVE",C_WHITE);
+                        if(ytFramesDrawn==0) { dTxt(30,60,"Loading video...",C_CYAN); }
+                        M5Cardputer.Display.display();
                     }
                 }
             }

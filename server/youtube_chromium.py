@@ -929,6 +929,96 @@ def api_cmd_result():
         })
 
 
+# ============================================================
+# VIDEO PIPE: ESP32 downloads video from home IP (URL is IP-bound),
+# uploads raw bytes here; server converts to MJPEG and streams back.
+# ============================================================
+
+_pipe_mjpeg_buf = b''      # Latest complete MJPEG frame
+_pipe_mjpeg_lock = threading.Lock()
+_pipe_active = threading.Event()
+_pipe_active.clear()
+
+
+@app.route('/api/pipe/<video_id>', methods=['POST'])
+def api_pipe(video_id):
+    """ESP32 uploads the raw video stream (its home IP matches the
+    googlevideo URL ip= param). Server runs ffmpeg: raw video -> MJPEG.
+    The MJPEG output is stored frame-by-frame in _pipe_mjpeg_buf and
+    served by /api/stream_pipe."""
+    _pipe_active.set()
+    _pipe_mjpeg_buf = b''
+    print(f"[Pipe] Starting pipe for {video_id}")
+
+    def mjpeg_to_buf(process):
+        """Read ffmpeg MJPEG output, keep latest frame in buffer."""
+        global _pipe_mjpeg_buf
+        frame = bytearray()
+        while True:
+            chunk = process.stdout.read(65536)
+            if not chunk:
+                break
+            frame.extend(chunk)
+            # Scan for JPEG end marker FF D9
+            while True:
+                end = frame.find(b'\xff\xd9')
+                if end < 0:
+                    break
+                complete = bytes(frame[:end + 2])
+                del frame[:end + 2]
+                if len(complete) > 100:
+                    with _pipe_mjpeg_lock:
+                        _pipe_mjpeg_buf = complete
+
+    ffmpeg_cmd = [
+        'ffmpeg', '-i', 'pipe:0',
+        '-f', 'mjpeg', '-q:v', '5', '-vf', 'scale=240:135',
+        '-r', str(MJPEG_FPS), '-an', 'pipe:1',
+    ]
+    process = None
+    try:
+        process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        # Reader thread: ffmpeg stdout -> buffer
+        t = threading.Thread(target=mjpeg_to_buf, args=(process,), daemon=True)
+        t.start()
+        # Stream request body into ffmpeg stdin
+        chunk_size = 16384
+        while True:
+            chunk = request.stream.read(chunk_size)
+            if not chunk:
+                break
+            process.stdin.write(chunk)
+            process.stdin.flush()
+    except Exception as e:
+        print(f"[Pipe] Error: {e}")
+    finally:
+        if process:
+            try:
+                process.stdin.close()
+            except Exception:
+                pass
+            process.wait(timeout=10)
+        _pipe_active.clear()
+        print(f"[Pipe] Pipe closed for {video_id}")
+        return jsonify({'status': 'done'})
+
+
+@app.route('/api/stream_pipe')
+def api_stream_pipe():
+    """Serve latest MJPEG frame from the pipe as multipart stream."""
+    def generate():
+        while _pipe_active.is_set():
+            with _pipe_mjpeg_lock:
+                frame = _pipe_mjpeg_buf
+            if frame:
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'
+                       + frame + b'\r\n')
+            time.sleep(1.0 / MJPEG_FPS)
+    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame',
+                    headers={'Cache-Control': 'no-cache'})
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     print("=" * 50)
