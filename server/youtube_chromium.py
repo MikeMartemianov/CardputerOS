@@ -511,6 +511,8 @@ def api_proxy_test():
     url = request.args.get('url', '')
     if not url:
         return jsonify({'error': 'no url'})
+    results = {}
+    # Test 1: plain urllib
     try:
         import urllib.request
         req = urllib.request.Request(url, headers={
@@ -519,14 +521,34 @@ def api_proxy_test():
         })
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = resp.read(4096)
-            return jsonify({
-                'status': 'ok' if len(data) else 'empty',
+            results['urllib'] = {
                 'http': resp.status,
                 'content_type': resp.headers.get('Content-Type', ''),
                 'bytes': len(data),
-            })
+            }
     except Exception as e:
-        return jsonify({'status': 'error', 'error': str(e)[:200]})
+        results['urllib'] = {'error': str(e)[:120]}
+    # Test 2: curl_cffi chrome impersonation
+    try:
+        from curl_cffi import requests as cffi_requests
+        resp = cffi_requests.get(url, impersonate='chrome', timeout=15,
+                                 headers={'Referer': 'https://www.youtube.com/'})
+        results['cffi_chrome'] = {
+            'http': resp.status_code,
+            'content_type': resp.headers.get('Content-Type', ''),
+            'bytes': len(resp.content),
+        }
+    except Exception as e:
+        results['cffi_chrome'] = {'error': str(e)[:120]}
+    # Test 3: yt-dlp (sends its own headers/signature handling)
+    try:
+        import yt_dlp
+        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'socket_timeout': 15}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            results['ytdlp'] = {'title': str(info.get('title', ''))[:50], 'url_len': len(info.get('url', ''))}
+    except Exception as e:
+        results['ytdlp'] = {'error': str(e)[:120]}
+    return jsonify(results)
 
 
 @app.route('/api/curl_test/<video_id>')
