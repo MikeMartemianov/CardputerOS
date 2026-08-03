@@ -1067,4 +1067,4 @@ if __name__ == '__main__':
     print(f"  SAPISID: {'YES' if extractor._sapisid else 'NO'}")
     print(f"  Strategies: yt-dlp -> Innertube")
     print("=" * 50)
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
