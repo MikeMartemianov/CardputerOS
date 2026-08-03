@@ -480,6 +480,64 @@ def api_scan():
     })
 
 
+@app.route('/api/curl_test/<video_id>')
+def api_curl_test(video_id):
+    """Test: raw curl_cffi impersonation to YouTube player API from this IP"""
+    results = []
+    try:
+        from curl_cffi import requests as cffi_requests
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        # What does yt-dlp actually send?
+        payload = {
+            'context': {'client': {'clientName': 'WEB', 'clientVersion': '2.20250101.00.00'}},
+            'videoId': video_id,
+        }
+        # Test 1: curl_cffi direct impersonate
+        try:
+            resp = cffi_requests.post(
+                'https://www.youtube.com/youtubei/v1/player?key=' + INNERTUBE_API_KEY,
+                json=payload, impersonate='chrome', timeout=20)
+            body = resp.json()
+            ps = body.get('playabilityStatus', {})
+            sd = body.get('streamingData', {})
+            fmts = sd.get('formats', []) + sd.get('adaptiveFormats', [])
+            results.append({
+                'test': 'curl_cffi chrome no-cookies',
+                'http': resp.status_code,
+                'playability': ps.get('status', '?'),
+                'reason': ps.get('reason', '')[:60],
+                'formats': len(fmts),
+            })
+        except Exception as e:
+            results.append({'test': 'curl_cffi chrome', 'error': str(e)[:100]})
+
+        # Test 2: with cookies
+        cookies = {}
+        for c in extractor._cookies:
+            if 'youtube' in c['domain'] or 'google' in c['domain']:
+                cookies[c['name']] = c['value']
+        try:
+            resp = cffi_requests.post(
+                'https://www.youtube.com/youtubei/v1/player?key=' + INNERTUBE_API_KEY,
+                json=payload, impersonate='chrome', cookies=cookies, timeout=20)
+            body = resp.json()
+            ps = body.get('playabilityStatus', {})
+            sd = body.get('streamingData', {})
+            fmts = sd.get('formats', []) + sd.get('adaptiveFormats', [])
+            results.append({
+                'test': 'curl_cffi chrome with-cookies',
+                'http': resp.status_code,
+                'playability': ps.get('status', '?'),
+                'reason': ps.get('reason', '')[:60],
+                'formats': len(fmts),
+            })
+        except Exception as e:
+            results.append({'test': 'curl_cffi with-cookies', 'error': str(e)[:100]})
+    except Exception as e:
+        results.append({'import_error': str(e)[:100]})
+    return jsonify({'video_id': video_id, 'results': results})
+
+
 @app.route('/api/diag/<video_id>')
 def api_diag(video_id):
     """Diagnostic: show raw response from each curl_cffi client"""
